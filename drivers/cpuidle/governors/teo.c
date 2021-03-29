@@ -192,12 +192,9 @@ struct teo_bin {
 struct teo_cpu {
 	s64 time_span_ns;
 	s64 sleep_length_ns;
-	struct teo_bin state_bins[CPUIDLE_STATE_MAX];
-	unsigned int total;
-	int next_recent_idx;
-	int recent_idx[NR_RECENT];
-	unsigned long util_threshold;
-	bool utilized;
+	struct teo_idle_state states[CPUIDLE_STATE_MAX];
+	int interval_idx;
+	u64 intervals[INTERVALS];
 };
 
 static DEFINE_PER_CPU(struct teo_cpu, teo_cpus);
@@ -345,7 +342,7 @@ static s64 teo_middle_of_bin(int idx, struct cpuidle_driver *drv)
  */
 static int teo_find_shallower_state(struct cpuidle_driver *drv,
 				    struct cpuidle_device *dev, int state_idx,
-				    s64 duration_ns, bool no_poll)
+				    s64 duration_ns)
 {
 	int i;
 
@@ -372,18 +369,10 @@ static int teo_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 {
 	struct teo_cpu *cpu_data = per_cpu_ptr(&teo_cpus, dev->cpu);
 	s64 latency_req = cpuidle_governor_latency_req(dev->cpu);
-	unsigned int idx_intercept_sum = 0;
-	unsigned int intercept_sum = 0;
-	unsigned int idx_recent_sum = 0;
-	unsigned int recent_sum = 0;
-	unsigned int idx_hit_sum = 0;
-	unsigned int hit_sum = 0;
-	int constraint_idx = 0;
-	int idx0 = 0, idx = -1;
-	bool alt_intercepts, alt_recent;
+	int max_early_idx, prev_max_early_idx, constraint_idx, idx0, idx, i;
+	unsigned int hits, misses, early_hits;
 	ktime_t delta_tick;
 	s64 duration_ns;
-	int i;
 
 	if (dev->last_state_idx >= 0) {
 		teo_update(drv, dev);
@@ -395,66 +384,73 @@ static int teo_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 	duration_ns = tick_nohz_get_sleep_length(&delta_tick);
 	cpu_data->sleep_length_ns = duration_ns;
 
-	/* Check if there is any choice in the first place. */
-	if (drv->state_count < 2) {
-		idx = 0;
-		goto end;
-	}
-	if (!dev->states_usage[0].disable) {
-		idx = 0;
-		if (drv->states[1].target_residency_ns > duration_ns)
-			goto end;
-	}
+	hits = 0;
+	misses = 0;
+	early_hits = 0;
+	max_early_idx = -1;
+	prev_max_early_idx = -1;
+	constraint_idx = drv->state_count;
+	idx = -1;
+	idx0 = idx;
 
-	cpu_data->utilized = teo_cpu_is_utilized(dev->cpu, cpu_data);
-	/*
-	 * The cpu is being utilized over the threshold there are only 2 states to choose from.
-	 * No need to consider metrics, choose the shallowest non-polling state and exit.
-	 */
-	if (drv->state_count < 3 && cpu_data->utilized) {
-		/* The CPU is utilized, so assume a short idle duration. */
-		duration_ns = teo_middle_of_bin(0, drv);
-		/*
-		 * If state 0 is enabled and it is not a polling one, select it
-		 * right away unless the scheduler tick has been stopped, in
-		 * which case care needs to be taken to leave the CPU in a deep
-		 * enough state in case it is not woken up any time soon after
-		 * all.  If state 1 is disabled, though, state 0 must be used
-		 * anyway.
-		 */
-		if ((!idx && !(drv->states[0].flags & CPUIDLE_FLAG_POLLING) &&
-		    teo_time_ok(duration_ns)) || dev->states_usage[1].disable)
-			idx = 0;
-		else /* Assume that state 1 is not a polling one and use it. */
-			idx = 1;
-
-		goto end;
-	}
-
-	/*
-	 * Find the deepest idle state whose target residency does not exceed
-	 * the current sleep length and the deepest idle state not deeper than
-	 * the former whose exit latency does not exceed the current latency
-	 * constraint.  Compute the sums of metrics for early wakeup pattern
-	 * detection.
-	 */
-	for (i = 1; i < drv->state_count; i++) {
-		struct teo_bin *prev_bin = &cpu_data->state_bins[i-1];
+	for (i = 0; i < drv->state_count; i++) {
 		struct cpuidle_state *s = &drv->states[i];
 
-		/*
-		 * Update the sums of idle state mertics for all of the states
-		 * shallower than the current one.
-		 */
-		intercept_sum += prev_bin->intercepts;
-		hit_sum += prev_bin->hits;
-		recent_sum += prev_bin->recent;
+		if (dev->states_usage[i].disable) {
+			/*
+			 * Ignore disabled states with target residencies beyond
+			 * the anticipated idle duration.
+			 */
+			if (s->target_residency_ns > duration_ns)
+				continue;
 
-		if (dev->states_usage[i].disable)
+			/*
+			 * This state is disabled, so the range of idle duration
+			 * values corresponding to it is covered by the current
+			 * candidate state, but still the "hits" and "misses"
+			 * metrics of the disabled state need to be used to
+			 * decide whether or not the state covering the range in
+			 * question is good enough.
+			 */
+			hits = cpu_data->states[i].hits;
+			misses = cpu_data->states[i].misses;
+
+			if (early_hits >= cpu_data->states[i].early_hits ||
+			    idx < 0)
+				continue;
+
+			/*
+			 * If the current candidate state has been the one with
+			 * the maximum "early hits" metric so far, the "early
+			 * hits" metric of the disabled state replaces the
+			 * current "early hits" count to avoid selecting a
+			 * deeper state with lower "early hits" metric.
+			 */
+			if (max_early_idx == idx) {
+				early_hits = cpu_data->states[i].early_hits;
+				continue;
+			}
+
+			/*
+			 * The current candidate state is closer to the disabled
+			 * one than the current maximum "early hits" state, so
+			 * replace the latter with it, but in case the maximum
+			 * "early hits" state index has not been set so far,
+			 * check if the current candidate state is not too
+			 * shallow for that role.
+			 */
+			if (teo_time_ok(drv->states[idx].target_residency_ns)) {
+				prev_max_early_idx = max_early_idx;
+				early_hits = cpu_data->states[i].early_hits;
+				max_early_idx = idx;
+			}
+
 			continue;
 
 		if (idx < 0) {
 			idx = i; /* first enabled state */
+			hits = cpu_data->states[i].hits;
+			misses = cpu_data->states[i].misses;
 			idx0 = i;
 		}
 
@@ -562,24 +558,51 @@ static int teo_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 	if (idx > constraint_idx)
 		idx = constraint_idx;
 
-	/*
-	 * If the CPU is being utilized over the threshold, choose a shallower
-	 * non-polling state to improve latency, unless the scheduler tick has
-	 * been stopped already and the shallower state's target residency is
-	 * not sufficiently large.
-	 */
-	if (cpu_data->utilized) {
-		s64 span_ns;
+	if (idx < 0) {
+		idx = 0; /* No states enabled. Must use 0. */
+	} else if (idx > idx0) {
+		unsigned int count = 0;
+		u64 sum = 0;
 
-		i = teo_find_shallower_state(drv, dev, idx, duration_ns, true);
-		span_ns = teo_middle_of_bin(i, drv);
-		if (teo_time_ok(span_ns)) {
-			idx = i;
-			duration_ns = span_ns;
+		/*
+		 * The target residencies of at least two different enabled idle
+		 * states are less than or equal to the current expected idle
+		 * duration.  Try to refine the selection using the most recent
+		 * measured idle duration values.
+		 *
+		 * Count and sum the most recent idle duration values less than
+		 * the current expected idle duration value.
+		 */
+		for (i = 0; i < INTERVALS; i++) {
+			u64 val = cpu_data->intervals[i];
+
+			if (val >= duration_ns)
+				continue;
+
+			count++;
+			sum += val;
+		}
+
+		/*
+		 * Give up unless the majority of the most recent idle duration
+		 * values are in the interesting range.
+		 */
+		if (count > INTERVALS / 2) {
+			u64 avg_ns = div64_u64(sum, count);
+
+			/*
+			 * Avoid spending too much time in an idle state that
+			 * would be too shallow.
+			 */
+			if (teo_time_ok(avg_ns)) {
+				duration_ns = avg_ns;
+				if (drv->states[idx].target_residency_ns > avg_ns)
+					idx = teo_find_shallower_state(drv, dev,
+								       idx, avg_ns);
+			}
 		}
 	}
 
-end:
 	/*
 	 * Don't stop the tick if the selected state is a polling one or if the
 	 * expected idle duration is shorter than the tick period length.
@@ -596,7 +619,7 @@ end:
 		 */
 		if (idx > idx0 &&
 		    drv->states[idx].target_residency_ns > delta_tick)
-			idx = teo_find_shallower_state(drv, dev, idx, delta_tick, false);
+			idx = teo_find_shallower_state(drv, dev, idx, delta_tick);
 	}
 
 	return idx;
