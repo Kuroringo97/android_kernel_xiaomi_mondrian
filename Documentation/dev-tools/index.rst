@@ -27,6 +27,8 @@ whole; patches welcome!
    kgdb
    kselftest
    kunit/index
+   ktap
+   autofdo
 
 
 .. only::  subproject and html
