@@ -816,15 +816,7 @@ static int sugov_init(struct cpufreq_policy *policy)
 		goto stop_kthread;
 	}
 
-	/*
-	 * Cap default rate_limit_us to 500us for faster frequency response
-	 * on mobile platforms. EPSS hardware switches in single-digit
-	 * microseconds, so a 500us rate limit is safe and improves
-	 * touch/scroll latency.
-	 */
-	tunables->rate_limit_us = min_t(unsigned int,
-					cpufreq_policy_transition_delay_us(policy),
-					500);
+	tunables->rate_limit_us = 2000;
 
 	policy->governor_data = sg_policy;
 	sg_policy->tunables = tunables;
