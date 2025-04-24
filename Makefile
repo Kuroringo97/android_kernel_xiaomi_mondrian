@@ -1005,7 +1005,19 @@ CC_FLAGS_LTO	+= -fvisibility=default
 endif
 
 # Limit inlining across translation units to reduce binary size
+ifdef CONFIG_AUTOFDO_CLANG
+KBUILD_LDFLAGS += -mllvm -import-instr-limit=40
+else
 KBUILD_LDFLAGS += -mllvm -import-instr-limit=5
+endif
+
+# Check for frame size exceeding threshold during prolog/epilog insertion
+# when using lld < 13.0.0.
+ifneq ($(CONFIG_FRAME_WARN),0)
+ifeq ($(shell test $(CONFIG_LLD_VERSION) -lt 130000; echo $$?),0)
+KBUILD_LDFLAGS	+= -plugin-opt=-warn-stack-size=$(CONFIG_FRAME_WARN)
+endif
+endif
 endif
 
 ifdef CONFIG_LTO
