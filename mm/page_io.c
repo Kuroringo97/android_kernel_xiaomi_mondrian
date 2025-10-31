@@ -192,32 +192,6 @@ bad_bmap:
 	goto out;
 }
 
-static bool swap_sched_async_compress(struct page *page)
-{
-	struct swap_info_struct *sis;
-	pg_data_t *pgdat = NODE_DATA(numa_node_id());
-
-	if (unlikely(!pgdat->kcompressd))
-		return false;
-
-	if (!current_is_kswapd())
-		return false;
-
-	if (!PageAnon(page))
-		return false;
-
-	sis = page_swap_info(page);
-	if (data_race(sis->flags & SWP_SYNCHRONOUS_IO)) {
-		if (kfifo_avail(&pgdat->kcompress_fifo) >= sizeof(page) &&
-			kfifo_in(&pgdat->kcompress_fifo, &page, sizeof(page))) {
-			wake_up_interruptible(&pgdat->kcompressd_wait);
-			return true;
-		}
-	}
-
-	return false;
-}
-
 /*
  * We may have stale swap cache pages in memory: notice
  * them here and get rid of the unnecessary final write.
@@ -247,58 +221,9 @@ int swap_writepage(struct page *page, struct writeback_control *wbc)
 		goto out;
 	}
 
-	/*
-	 * Compression within zswap and zram might block rmap, unmap
-	 * of both file and anon pages, try to do compression async
-	 * if possible
-	 */
-	if (swap_sched_async_compress(page))
-		return 0;
-
 	ret = __swap_writepage(page, wbc, end_swap_bio_write);
 out:
 	return ret;
-}
-
-int kcompressd(void *p)
-{
-	pg_data_t *pgdat = (pg_data_t *)p;
-	struct page *page;
-	struct writeback_control wbc = {
-		.sync_mode = WB_SYNC_NONE,
-		.nr_to_write = SWAP_CLUSTER_MAX,
-		.range_start = 0,
-		.range_end = LLONG_MAX,
-		.for_reclaim = 1,
-	};
-
-	/*
-	 * Tell the memory management that we're a "memory allocator",
-	 * and that if we need more memory we should get access to it
-	 * regardless (see "__alloc_pages()"). "kswapd" should
-	 * never get caught in the normal page freeing logic.
-	 *
-	 * (Kswapd normally doesn't need memory anyway, but sometimes
-	 * you need a small amount of memory in order to be able to
-	 * page out something else, and this flag essentially protects
-	 * us from recursively trying to free more memory as we're
-	 * trying to free the first piece of memory in the first place).
-	 */
-	current->flags |= PF_MEMALLOC | PF_KSWAPD;
-
-	while (!kthread_should_stop()) {
-		wait_event_interruptible(pgdat->kcompressd_wait,
-				!kfifo_is_empty(&pgdat->kcompress_fifo));
-
-		while (!kfifo_is_empty(&pgdat->kcompress_fifo)) {
-			if (kfifo_out(&pgdat->kcompress_fifo, &page, sizeof(page))) {
-				__swap_writepage(page, &wbc, end_swap_bio_write);
-			}
-		}
-	}
-	current->flags &= ~(PF_MEMALLOC | PF_KSWAPD);
-
-	return 0;
 }
 
 static inline void count_swpout_vm_event(struct page *page)
