@@ -29,6 +29,7 @@ static struct {
 	struct socket *sock;
 	struct sockaddr_qrtr bcast_sq;
 	struct list_head lookups;
+	u32 lookup_count;
 	struct kthread_worker kworker;
 	struct kthread_work work;
 	struct task_struct *task;
@@ -82,16 +83,6 @@ struct qrtr_node {
  * requirement changes in the future, this value can be increased.
  */
 #define QRTR_NS_MAX_LOOKUPS 64
-
-/* Max nodes, server, lookup limits are chosen based on the current platform
- * requirements. If the requirement changes in the future, these values can be
- * increased.
- */
-#define QRTR_NS_MAX_NODES   64
-#define QRTR_NS_MAX_SERVERS 256
-#define QRTR_NS_MAX_LOOKUPS 64
-
-static u8 node_count;
 
 static struct qrtr_node *node_get(unsigned int node_id)
 {
