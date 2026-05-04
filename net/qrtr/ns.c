@@ -424,8 +424,10 @@ static int ctrl_cmd_bye(struct sockaddr_qrtr *from)
 		msg.msg_namelen = sizeof(sq);
 
 		ret = kernel_sendmsg(qrtr_ns.sock, &msg, &iv, 1, sizeof(pkt));
-		if (ret < 0) {
-			pr_err("failed to send bye cmd\n");
+		if (ret < 0 && ret != -ENODEV) {
+			pr_err_ratelimited("send bye failed: [0x%x:0x%x] 0x%x ret: %d\n",
+					   srv->service, srv->instance,
+					   srv->port, ret);
 			goto delete_node;
 		}
 	}
