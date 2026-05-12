@@ -20,6 +20,7 @@
 #include <linux/slab.h>
 #include <linux/qcom-cpufreq-hw.h>
 #include <linux/topology.h>
+#include <linux/fie.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/dcvsh.h>
@@ -533,8 +534,10 @@ static int qcom_cpu_resources_init(struct platform_device *pdev,
 	struct resource *res;
 	struct device *dev = &pdev->dev;
 	void __iomem *base;
-	char pdmem_name[MAX_FN_SIZE] = {};
-	int ret, cpu_r;
+	unsigned int max_freq;
+	int i;
+	struct qcom_cpufreq_data *data;
+	int ret, index;
 
 	c = devm_kzalloc(dev, sizeof(*c), GFP_KERNEL);
 	if (!c)
@@ -573,6 +576,34 @@ static int qcom_cpu_resources_init(struct platform_device *pdev,
 		dev_err(dev, "Domain-%d failed to read LUT\n", index);
 		return ret;
 	}
+
+	/*
+	 * Register this frequency domain with FIE now that the freq table is
+	 * populated. Scan the table for the max frequency since cpuinfo.max_freq
+	 * isn't set until after cpu_init returns.
+	 */
+	max_freq = 0;
+	for (i = 0; policy->freq_table[i].frequency != CPUFREQ_TABLE_END; i++) {
+		if (policy->freq_table[i].frequency != CPUFREQ_ENTRY_INVALID &&
+		    policy->freq_table[i].frequency > max_freq)
+			max_freq = policy->freq_table[i].frequency;
+	}
+	fie_init_cpu_domain(policy->cpus, max_freq);
+
+
+	/*
+	 * Register this frequency domain with FIE now that the freq table is
+	 * populated. Scan the table for the max frequency since cpuinfo.max_freq
+	 * isn't set until after cpu_init returns.
+	 */
+	max_freq = 0;
+	for (i = 0; policy->freq_table[i].frequency != CPUFREQ_TABLE_END; i++) {
+		if (policy->freq_table[i].frequency != CPUFREQ_ENTRY_INVALID &&
+		    policy->freq_table[i].frequency > max_freq)
+			max_freq = policy->freq_table[i].frequency;
+	}
+	fie_init_cpu_domain(policy->cpus, max_freq);
+
 
 	perf_lock_support = of_property_read_bool(dev->of_node,
 					"qcom,perf-lock-support");
