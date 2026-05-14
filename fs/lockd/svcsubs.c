@@ -96,7 +96,12 @@ nlm_lookup_file(struct svc_rqst *rqstp, struct nlm_file **result,
 	mutex_lock(&nlm_file_mutex);
 
 	hlist_for_each_entry(file, &nlm_files[hash], f_list)
-		if (!nfs_compare_fh(&file->f_handle, f))
+		if (!nfs_compare_fh(&file->f_handle, &lock->fh)) {
+			mutex_lock(&file->f_mutex);
+			nfserr = nlm_do_fopen(rqstp, file, mode);
+			mutex_unlock(&file->f_mutex);
+			if (nfserr)
+				goto out_unlock;
 			goto found;
 
 	nlm_debug_print_fh("creating file for", f);
