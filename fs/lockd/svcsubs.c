@@ -111,16 +111,9 @@ nlm_lookup_file(struct svc_rqst *rqstp, struct nlm_file **result,
 	INIT_HLIST_NODE(&file->f_list);
 	INIT_LIST_HEAD(&file->f_blocks);
 
-	/* Open the file. Note that this must not sleep for too long, else
-	 * we would lock up lockd:-) So no NFS re-exports, folks.
-	 *
-	 * We have to make sure we have the right credential to open
-	 * the file.
-	 */
-	if ((nfserr = nlmsvc_ops->fopen(rqstp, f, &file->f_file)) != 0) {
-		dprintk("lockd: open failed (error %d)\n", nfserr);
+	nfserr = nlm_do_fopen(rqstp, file, mode);
+	if (nfserr)
 		goto out_free;
-	}
 
 	hlist_add_head(&file->f_list, &nlm_files[hash]);
 
