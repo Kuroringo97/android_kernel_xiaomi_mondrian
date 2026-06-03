@@ -782,6 +782,12 @@ typedef  enum  {
     WMI_SERVICE_ML_PEER_MASTER_MIGRATION_SUPPORT = 500,
     WMI_SERVICE_NAN_AP_ASSISTED_DFS_OPERATION_SUPPORT = 501, /* Indicates FW supports NAN DFS operation */
 
+    /*
+     * Indicates FW supports NAN in offload mode
+     * (supplicant-based NAN offload mode architecture).
+     */
+    WMI_SERVICE_NAN_OFFLOAD_MODE_SUPPORT = 519,
+
 
     WMI_MAX_EXT2_SERVICE
 

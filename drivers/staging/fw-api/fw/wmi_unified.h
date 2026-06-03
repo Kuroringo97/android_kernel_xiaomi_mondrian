@@ -5571,7 +5571,11 @@ typedef struct {
         struct {
             A_UINT32
                 dw_notif_lead_time: 8,
-                reserved2: 24;
+                /* enable supplicant based NAN offload mode */
+                enable_nan_ofld_mode: 1,
+                /* disable/enable temporal IOT mode */
+                enable_temporal_iot_mode: 1,
+                reserved2: 22;
         };
     };
 } wmi_resource_config;
@@ -5585,6 +5589,37 @@ typedef struct {
         WMI_GET_BITS(word32, 0, 8)
 #define WMI_RSRC_CFG_NAN_CONFIG_DW_NOTIF_LEAD_TIME_SET(word32, value) \
         WMI_SET_BITS(word32, 0, 8, value)
+
+#define WMI_RSRC_CFG_NAN_CONFIG_ENABLE_NAN_OFLD_MODE_GET(word32) \
+    WMI_GET_BITS(word32, 8, 1)
+#define WMI_RSRC_CFG_NAN_CONFIG_ENABLE_NAN_OFLD_MODE_SET(word32, value) \
+    WMI_SET_BITS(word32, 8, 1, value)
+
+#define WMI_RSRC_CFG_NAN_CONFIG_ENABLE_NAN_TEMPORAL_IOT_MODE_GET(word32) \
+    WMI_GET_BITS(word32, 9, 1)
+#define WMI_RSRC_CFG_NAN_CONFIG_ENABLE_NAN_TEMPORAL_IOT_MODE_SET(word32, value) \
+    WMI_SET_BITS(word32, 9, 1, value)
+
+
+/*
+ * WMI_NAN_DISC_COOKIE_GET / WMI_NAN_DISC_COOKIE_SET
+ *
+ * Accessor macros for the 64-bit cookie value split across
+ * cookie_low32 and cookie_high32 fields in WMI NAN disc structs.
+ *
+ * Usage (read):
+ *   A_UINT64 c = WMI_NAN_DISC_COOKIE_GET(p->cookie_low32, p->cookie_high32);
+ *
+ * Usage (write):
+ *   WMI_NAN_DISC_COOKIE_SET(p->cookie_low32, p->cookie_high32, my_cookie);
+ */
+#define WMI_NAN_DISC_COOKIE_GET(low32, high32) \
+    (((A_UINT64)(high32) << 32) | (A_UINT64)(low32))
+#define WMI_NAN_DISC_COOKIE_SET(low32, high32, cookie64) \
+    do { \
+        (low32)  = (A_UINT32)((cookie64) & 0xFFFFFFFFUL); \
+        (high32) = (A_UINT32)(((cookie64) >> 32) & 0xFFFFFFFFUL); \
+    } while (0)
 
 #define WMI_MSDU_FLOW_AST_ENABLE_GET(msdu_flow_config0, ast_x) \
     (((ast_x) == 0) ? 1 : ((msdu_flow_config0) & (1 << ((ast_x) - 1))))
