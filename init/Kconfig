@@ -1344,6 +1344,26 @@ config SCHED_CASS
 	  their lowest P-state necessary to satisfy the overall load at any
 	  given moment.
 
+config SCHED_BOSS
+	bool "BOSS: Burst Optimized Scenario Scheduler"
+	depends on SCHED_BORE && SCHED_CASS
+	default y
+	help
+	  Bridges CASS placement awareness with BORE burst penalization.
+
+	  When CASS selects a CPU for a task, BOSS classifies that CPU into
+	  a placement tier (LITTLE/BIG/PRIME) based on its raw capacity.
+	  BORE's burst penalty is then scaled by this tier: tasks placed on
+	  high-capacity cores are penalized less for bursting, since bursting
+	  on the Prime core is expected and efficient behaviour. Tasks placed
+	  on efficiency cores receive the full BORE penalty.
+
+	  CPU tiers are derived automatically from hardware topology at boot
+	  via arch_scale_cpu_capacity(). No hardcoded values.
+
+	  Requires both SCHED_BORE and SCHED_CASS.
+	  Say Y for TOBIUME on marble/mondrian.
+
 config SCHED_AUTOGROUP
 	bool "Automatic process group scheduling"
 	select CGROUPS
