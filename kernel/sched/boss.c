@@ -28,7 +28,7 @@
 #include "boss.h"
 
 /* ── Global state ───────────────────────────────────── */
-bool boss_enabled = true;
+int boss_enabled = 1;
 
 /* Capacity thresholds derived at boot from CPU topology */
 static unsigned long boss_tier_cap[BOSS_TIER_MAX];
@@ -103,9 +103,9 @@ static struct ctl_table boss_table[] = {
 	{
 		.procname	= "sched_boss_enabled",
 		.data		= &boss_enabled,
-		.maxlen		= sizeof(bool),
+		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= proc_dobool,
+		.proc_handler	= proc_dointvec,
 	},
 	{ }
 };
