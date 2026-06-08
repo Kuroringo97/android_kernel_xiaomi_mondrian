@@ -81,6 +81,12 @@ static inline u8 boss_cap_to_tier(unsigned long cap_orig)
 {
 	if (cap_orig >= boss_tier_cap[BOSS_TIER_PRIME])
 		return BOSS_TIER_PRIME;
+	/*
+	 * On dual-cluster SoCs (n=2), boss_tier_cap[BOSS_TIER_BIG] ==
+	 * boss_tier_cap[BOSS_TIER_LITTLE], so this check never fires and
+	 * all non-PRIME tasks correctly fall through to BOSS_TIER_LITTLE.
+	 * This is intentional — no BIG tier exists on such topologies.
+	 */
 	if (cap_orig >= boss_tier_cap[BOSS_TIER_BIG])
 		return BOSS_TIER_BIG;
 	return BOSS_TIER_LITTLE;
@@ -101,7 +107,7 @@ void boss_update_placement_tier(struct task_struct *p,
 /* ── Sysctl ─────────────────────────────────────────── */
 static struct ctl_table boss_table[] = {
 	{
-		.procname	= "sched_boss_enabled",
+		.procname	= "sched_boss",
 		.data		= &boss_enabled,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
