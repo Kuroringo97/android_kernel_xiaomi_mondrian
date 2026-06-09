@@ -290,7 +290,9 @@ static int cass_select_task_rq(struct task_struct *p, int prev_cpu, int sd_flag,
 	sync = (wake_flags & WF_SYNC) && !(current->flags & PF_EXITING);
 	cpu = cass_best_cpu(p, prev_cpu, sync, rt);
 #ifdef CONFIG_SCHED_BOSS
-	boss_update_placement_tier(p, arch_scale_cpu_capacity(cpu));
+	boss_update_placement_tier(p, arch_scale_cpu_capacity(cpu),
+				   arch_scale_cpu_capacity(cpu) -
+				   thermal_load_avg(cpu_rq(cpu)));
 #endif
 	return cpu;
 }
