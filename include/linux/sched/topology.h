@@ -77,6 +77,12 @@ struct sched_domain_shared {
 	atomic_t	nr_busy_cpus;
 	int		has_idle_cores;
 
+#ifdef CONFIG_SCHED_POC_SELECTOR
+	atomic64_t			poc_idle_cpus;
+	int				poc_cpu_base;
+	bool				poc_fast_eligible;
+#endif
+
 	ANDROID_VENDOR_DATA(1);
 };
 

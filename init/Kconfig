@@ -1361,8 +1361,19 @@ config SCHED_BOSS
 	  CPU tiers are derived automatically from hardware topology at boot
 	  via arch_scale_cpu_capacity(). No hardcoded values.
 
-	  Requires both SCHED_BORE and SCHED_CASS.
-	  Say Y for TOBIUME on marble/mondrian.
+config SCHED_POC_SELECTOR
+	bool "POC: Piece-Of-Cake Fast Idle CPU Selector"
+	depends on SMP
+	default y
+	help
+	  Fast idle CPU selector using per-LLC atomic64 bitmaps.
+
+	  Replaces the linear scan in select_idle_cpu() with O(1) bitmap
+	  lookup via ctz. Reduces wakeup latency under moderate to heavy
+	  load by avoiding unnecessary cacheline loads when scanning for
+	  idle CPUs.
+
+	  If unsure, say Y.
 
 config SCHED_AUTOGROUP
 	bool "Automatic process group scheduling"
