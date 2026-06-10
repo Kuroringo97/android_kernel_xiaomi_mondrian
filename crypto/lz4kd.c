@@ -87,8 +87,12 @@ static void __exit lz4kd_mod_fini(void)
 	crypto_unregister_alg(&alg_lz4kd);
 }
 
+#ifdef MODULE
 module_init(lz4kd_mod_init);
 module_exit(lz4kd_mod_fini);
+#else
+late_initcall(lz4kd_mod_init);
+#endif
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("LZ4KD Compression Algorithm");
