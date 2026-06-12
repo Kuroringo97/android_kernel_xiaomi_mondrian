@@ -5,7 +5,6 @@
 
 /**
  * DOC: Capacity Aware Superset Scheduler (CASS) description
- *
  * The Capacity Aware Superset Scheduler (CASS) optimizes runqueue selection of
  * CFS tasks. By using CPU capacity as a basis for comparing the relative
  * utilization between different CPUs, CASS fairly balances load across CPUs of
@@ -70,8 +69,15 @@ void cass_cpu_util(struct cass_cpu_cand *c, int this_cpu, bool sync)
 	 * Capacity is considered lost to RT tasks even when @p is an RT task in
 	 * order to produce consistently balanced task placement results between
 	 * CFS and RT tasks when CASS selects a CPU for them.
+	 *
+	 * Guard against cap_max == 0 to prevent underflow. Without this,
+	 * (cap_max - 1) wraps to ULONG_MAX, making min() return hard_util
+	 * and cap becomes a massive positive value on a fully-throttled CPU.
 	 */
-	c->cap = c->cap_max - min(c->hard_util, c->cap_max - 1);
+	if (unlikely(!c->cap_max))
+		c->cap = 0;
+	else
+		c->cap = c->cap_max - min(c->hard_util, c->cap_max - 1);
 
 	/* Get the current capacity with thermal pressure excluded */
 	c->cap_no_therm = c->cap_orig - min(c->hard_util, c->cap_orig - 1);
@@ -294,6 +300,7 @@ static int cass_select_task_rq(struct task_struct *p, int prev_cpu, int sd_flag,
 
 	sync = (wake_flags & WF_SYNC) && !(current->flags & PF_EXITING);
 	cpu = cass_best_cpu(p, prev_cpu, sync, rt);
+
 #ifdef CONFIG_SCHED_BOSS
 	{
 		unsigned long cap_orig = arch_scale_cpu_capacity(cpu);
@@ -304,6 +311,7 @@ static int cass_select_task_rq(struct task_struct *p, int prev_cpu, int sd_flag,
 		boss_update_placement_tier(p, cap_orig, cap_max);
 	}
 #endif
+
 	return cpu;
 }
 
