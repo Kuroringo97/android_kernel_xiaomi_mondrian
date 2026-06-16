@@ -59,11 +59,6 @@ static inline struct zblock_block *find_and_claim_block(struct block_list *b,
 		if (--z->free_slots == 0)
 			list_move(&z->link, &b->full_list);
 
-		/*
-		 * There is a slot in the block and we just made sure it would
-		 * remain.
-		 * Find that slot and set the busy bit.
-		 */
 		for (slot = find_first_zero_bit(z->slot_info,
 				block_desc[block_type].slots_per_block);
 		     slot < block_desc[block_type].slots_per_block;
@@ -82,9 +77,6 @@ static inline struct zblock_block *find_and_claim_block(struct block_list *b,
 	return NULL;
 }
 
-/*
- * allocate new block and add it to corresponding block list
- */
 static struct zblock_block *alloc_block(struct zblock_pool *pool,
 					int block_type, gfp_t gfp,
 					unsigned long *handle)
@@ -98,7 +90,6 @@ static struct zblock_block *alloc_block(struct zblock_pool *pool,
 
 	block_list = &pool->block_lists[block_type];
 
-	/* init block data  */
 	block->free_slots = block_desc[block_type].slots_per_block - 1;
 	memset(&block->slot_info, 0, sizeof(block->slot_info));
 	set_bit(0, block->slot_info);
@@ -114,18 +105,6 @@ static struct zblock_block *alloc_block(struct zblock_pool *pool,
 	return block;
 }
 
-/*****************
- * API Functions
- ***************/
-
-/**
- * zblock_create_pool() - create a new zblock pool
- * @gfp:	gfp flags when allocating the zblock pool structure
- * @ops:	user-defined operations for the zblock pool
- *
- * Return: pointer to the new zblock pool or NULL if the metadata allocation
- * failed.
- */
 struct zblock_pool *zblock_create_pool(gfp_t gfp)
 {
 	struct zblock_pool *pool;
@@ -136,7 +115,6 @@ struct zblock_pool *zblock_create_pool(gfp_t gfp)
 	if (!pool)
 		return NULL;
 
-	/* init each block list */
 	for (i = 0; i < ARRAY_SIZE(block_desc); i++) {
 		block_list = &pool->block_lists[i];
 		spin_lock_init(&block_list->lock);
@@ -148,10 +126,6 @@ struct zblock_pool *zblock_create_pool(gfp_t gfp)
 	return pool;
 }
 
-/**
- * zblock_destroy_pool() - destroys an existing zblock pool
- * @pool:	the zblock pool to be destroyed
- */
 void zblock_destroy_pool(struct zblock_pool *pool)
 {
 	int i;
@@ -179,17 +153,6 @@ void zblock_destroy_pool(struct zblock_pool *pool)
 	kfree(pool);
 }
 
-/**
- * zblock_alloc() - allocates a slot of appropriate size
- * @pool:	zblock pool from which to allocate
- * @size:	size in bytes of the desired allocation
- * @gfp:	gfp flags used if the pool needs to grow
- * @handle:	handle of the new allocation
- *
- * Return: 0 if success and handle is set, otherwise -EINVAL if the size or
- * gfp arguments are invalid or -ENOMEM if the pool was unable to allocate
- * a new slot.
- */
 int zblock_alloc(struct zblock_pool *pool, size_t size, gfp_t gfp,
 		 unsigned long *handle)
 {
@@ -203,7 +166,6 @@ int zblock_alloc(struct zblock_pool *pool, size_t size, gfp_t gfp,
 	if (size > zblock_get_max_alloc_size())
 		return -ENOSPC;
 
-	/* find minimal-fit block type */
 	for (block_type = 0; block_type < ARRAY_SIZE(block_desc); block_type++) {
 		if (size <= block_desc[block_type].slot_size)
 			break;
@@ -221,17 +183,11 @@ int zblock_alloc(struct zblock_pool *pool, size_t size, gfp_t gfp,
 	if (block)
 		return 0;
 
-	/* not found block with free slots try to allocate new empty block */
 	block = alloc_block(pool, block_type, gfp & ~(__GFP_MOVABLE | __GFP_HIGHMEM), handle);
 
 	return block ? 0 : -ENOMEM;
 }
 
-/**
- * zblock_free() - frees the allocation associated with the given handle
- * @pool:	pool in which the allocation resided
- * @handle:	handle associated with the allocation returned by zblock_alloc()
- */
 void zblock_free(struct zblock_pool *pool, unsigned long handle)
 {
 	unsigned int slot, block_type;
@@ -249,7 +205,6 @@ void zblock_free(struct zblock_pool *pool, unsigned long handle)
 	block_list = &pool->block_lists[block_type];
 
 	spin_lock(&block_list->lock);
-	/* if all slots in block are empty delete whole block */
 	if (++block->free_slots == block_desc[block_type].slots_per_block) {
 		block_list->block_count--;
 		list_del(&block->link);
@@ -263,13 +218,6 @@ void zblock_free(struct zblock_pool *pool, unsigned long handle)
 	spin_unlock(&block_list->lock);
 }
 
-/**
- * zblock_map() - maps the allocation associated with the given handle
- * @pool:	pool in which the allocation resides
- * @handle:	handle associated with the allocation to be mapped
- *
- * Returns: a pointer to the mapped allocation
- */
 void *zblock_map(struct zblock_pool *pool, unsigned long handle)
 {
 	unsigned int block_type, slot;
@@ -292,21 +240,10 @@ void *zblock_map(struct zblock_pool *pool, unsigned long handle)
 	return p;
 }
 
-/**
- * zblock_unmap() - unmaps the allocation associated with the given handle
- * @pool:	pool in which the allocation resides
- * @handle:	handle associated with the allocation to be unmapped
- */
 void zblock_unmap(struct zblock_pool *pool, unsigned long handle)
 {
 }
 
-/**
- * zblock_get_total_pages() - gets the zblock pool size in pages
- * @pool:	pool being queried
- *
- * Returns: size in bytes of the given pool.
- */
 u64 zblock_get_total_pages(struct zblock_pool *pool)
 {
 	u64 total_size;
@@ -323,10 +260,6 @@ size_t zblock_get_max_alloc_size(void)
 {
 	return block_desc[ARRAY_SIZE(block_desc) - 1].slot_size;
 }
-
-/*****************
- * zpool
- ****************/
 
 static void *zblock_zpool_create(const char *name, gfp_t gfp,
 				 const struct zpool_ops *ops,
@@ -391,8 +324,7 @@ static int __init create_rbtree(void)
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(block_desc); i++) {
-		struct block_desc_node *block_node = kmalloc(sizeof(*block_node),
-							     GFP_KERNEL);
+		struct block_desc_node *block_node = kmalloc(sizeof(*block_node), GFP_KERNEL);
 		struct rb_node **new = &block_desc_tree.rb_node, *parent = NULL;
 
 		if (!block_node) {
@@ -401,8 +333,7 @@ static int __init create_rbtree(void)
 		}
 
 		if (i > 0 && block_desc[i].slot_size <= block_desc[i-1].slot_size) {
-			pr_err("%s: block descriptors not in ascending order\n",
-			       __func__);
+			pr_err("%s: block descriptors not in ascending order\n", __func__);
 			delete_rbtree();
 			return -EINVAL;
 		}
@@ -417,7 +348,6 @@ static int __init create_rbtree(void)
 
 		while (*new) {
 			parent = *new;
-			/* the array is sorted so we will always go to the right */
 			new = &((*new)->rb_right);
 		}
 
