@@ -181,7 +181,7 @@ EXPORT_SYMBOL_GPL(add_input_randomness);
  *	 insert into entropy pool.
  * @size: length of buffer
  */
-void add_device_randomness(const void *buf, size_t size)
+void add_device_randomness(const void *buf, unsigned int size)
 {
 	lrng_pool_insert_aux((u8 *)buf, size, 0);
 }
@@ -294,7 +294,7 @@ EXPORT_SYMBOL_GPL(unregister_random_vmfork_notifier);
  * @buf: buffer to store the random bytes
  * @nbytes: size of the buffer
  */
-void get_random_bytes(void *buf, size_t nbytes)
+void get_random_bytes(void *buf, int nbytes)
 {
 	lrng_get_random_bytes(buf, nbytes);
 }
@@ -335,14 +335,14 @@ EXPORT_SYMBOL(wait_for_random_bytes);
  *
  * Return: number of bytes filled in.
  */
-size_t __must_check get_random_bytes_arch(void *buf, size_t nbytes)
+int __must_check get_random_bytes_arch(void *buf, int nbytes)
 {
-	size_t left = nbytes;
+	int left = nbytes;
 	u8 *p = buf;
 
 	while (left) {
 		unsigned long v;
-		size_t chunk = min_t(size_t, left, sizeof(unsigned long));
+		int chunk = min_t(int, left, (int)sizeof(unsigned long));
 
 		if (!arch_get_random_long(&v))
 			break;
