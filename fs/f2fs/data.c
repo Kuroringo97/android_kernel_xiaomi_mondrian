@@ -366,7 +366,7 @@ static void f2fs_write_end_io(struct bio *bio)
 		if (f2fs_in_warm_node_list(sbi, page))
 			f2fs_del_fsync_node_entry(sbi, page);
 		clear_page_private_gcing(page);
-		clear_cold_data(page);
+
 		end_page_writeback(page);
 	}
 
