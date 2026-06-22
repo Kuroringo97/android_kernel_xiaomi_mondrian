@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
  * BOSS: Burst Optimized Scenario Scheduler
+ *
  * Header: tier definitions, penalty scale table, and inline helpers.
  * boss.c implements the tier map construction and placement update.
  * fair.c calls boss_scale_burst_score() inside update_burst_score().
@@ -19,6 +20,7 @@
 
 /*
  * Penalty scale per tier, out of 256 = 100%.
+ *
  * MUST be u16: LITTLE scale is 256, which overflows u8 (max 255)
  * and would silently truncate to 0, zeroing all LITTLE-tier penalties.
  *
@@ -35,6 +37,7 @@ static const u16 boss_penalty_scale[BOSS_TIER_MAX] = {
 /*
  * Thermal throttle threshold: if cap_max drops below 50% of cap_orig,
  * the tier is downgraded. Above 50%, penalty is interpolated.
+ *
  * Using fixed-point: threshold = cap_orig >> 1 (i.e. 50%).
  * Stored as SCHED_CAPACITY_SCALE (1024) based values.
  */
@@ -42,36 +45,19 @@ static const u16 boss_penalty_scale[BOSS_TIER_MAX] = {
 
 extern int boss_enabled;
 
-/* Defined in boss.c - tier capacity thresholds */
-extern unsigned long boss_tier_cap[BOSS_TIER_MAX];
-
 /* Called from cass.c after cass_best_cpu() selects the target CPU */
 void boss_update_placement_tier(struct task_struct *p,
 				unsigned long cap_orig,
 				unsigned long cap_max);
 
 /*
- * boss_get_tier_cap_orig() - get original capacity for a given tier.
- * Returns the boot-time capacity threshold for the tier, clamped to u16.
- * This replaces the incorrect SCHED_CAPACITY_SCALE proxy that made
- * thermal scaling inaccurate for Little/Big cores.
- */
-static inline u16 boss_get_tier_cap_orig(u8 tier)
-{
-	if (unlikely(tier >= BOSS_TIER_MAX))
-		return SCHED_CAPACITY_SCALE;
-
-	return (u16)min(boss_tier_cap[tier], (unsigned long)U16_MAX);
-}
-
-/*
  * boss_thermal_scale() - compute effective penalty scale with thermal
  * awareness.
  *
  * Hybrid approach:
- * If cap_max < 50% of cap_orig → downgrade tier (hard step).
- * Otherwise → interpolate between current tier scale and next
- *             lower tier scale, weighted by throttle severity.
+ *   1. If cap_max < 50% of cap_orig → downgrade tier (hard step).
+ *   2. Otherwise → interpolate between current tier scale and next
+ *      lower tier scale, weighted by throttle severity.
  *
  * throttle_ratio = cap_max / cap_orig in [0, 256] fixed point.
  * At ratio=256 (no throttle): full current tier scale applies.
@@ -99,8 +85,8 @@ static inline u16 boss_thermal_scale(u8 tier, u16 cap_orig, u16 cap_max)
 	/* Mild throttle: interpolate between current and lower tier */
 	scale_curr  = boss_penalty_scale[tier];
 	scale_lower = (tier > BOSS_TIER_LITTLE)
-		? boss_penalty_scale[tier - 1]
-		: boss_penalty_scale[BOSS_TIER_LITTLE];
+			? boss_penalty_scale[tier - 1]
+			: boss_penalty_scale[BOSS_TIER_LITTLE];
 
 	/*
 	 * throttle_ratio is in [128..256].
@@ -117,6 +103,7 @@ static inline u16 boss_thermal_scale(u8 tier, u16 cap_orig, u16 cap_max)
 /*
  * Called from BORE's update_burst_score() to scale the raw burst
  * penalty by the task's placement tier and thermal state.
+ *
  * Reads p->boss_placement_tier and p->boss_cap_max (both written on
  * wakeup by CASS via boss_update_placement_tier()).
  * No locks, no branches beyond the enabled check.
@@ -124,7 +111,7 @@ static inline u16 boss_thermal_scale(u8 tier, u16 cap_orig, u16 cap_max)
 static inline u8 boss_scale_burst_score(struct task_struct *p, u8 raw_score)
 {
 	u8  tier;
-	u16 cap_max, cap_orig, scale;
+	u16 cap_max, scale;
 
 	if (!boss_enabled)
 		return raw_score;
@@ -137,13 +124,11 @@ static inline u8 boss_scale_burst_score(struct task_struct *p, u8 raw_score)
 		tier = BOSS_TIER_LITTLE;
 
 	/*
-	 * FIX: Use actual tier capacity instead of SCHED_CAPACITY_SCALE proxy.
-	 * Previously used 1024 for all tiers, making thermal scaling wrong
-	 * for Little (~300) and Big (~700) cores. Now uses boot-time
-	 * boss_tier_cap[] values for accurate throttle ratio calculation.
+	 * cap_orig for this tier is boss_tier_cap[tier], but we only have
+	 * u16 cap_max stored. Use SCHED_CAPACITY_SCALE (1024) as cap_orig
+	 * proxy — valid since all ARM capacity values are normalised to 1024.
 	 */
-	cap_orig = boss_get_tier_cap_orig(tier);
-	scale = boss_thermal_scale(tier, cap_orig, cap_max);
+	scale = boss_thermal_scale(tier, SCHED_CAPACITY_SCALE, cap_max);
 
 	return (u8)(((u32)raw_score * scale) >> 8);
 }
