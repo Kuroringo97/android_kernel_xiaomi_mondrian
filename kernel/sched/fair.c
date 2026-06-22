@@ -125,14 +125,6 @@ u8   __read_mostly sched_burst_fork_atavistic   = 2;
 u8   __read_mostly sched_burst_penalty_offset   = 22;
 uint __read_mostly sched_burst_penalty_scale    = 1280;
 uint __read_mostly sched_burst_cache_lifetime   = 60000000;
-
-/*
- * Per-CPU recursion guard for BORE reweighting.
- * Prevents infinite recursion:
- *   update_curr -> update_burst_penalty -> update_burst_score
- *   -> reweight_task_by_prio -> reweight_entity -> update_curr
- */
-static DEFINE_PER_CPU(bool, bore_reweighting);
 #endif // CONFIG_SCHED_BORE
 
 int sched_thermal_decay_shift;
@@ -589,24 +581,7 @@ static void reweight_task_by_prio(struct task_struct *p, int prio)
 	struct load_weight *load = &se->load;
 	unsigned long weight = scale_load(sched_prio_to_weight[prio]);
 
-	/*
-	 * Guard against infinite recursion via reweight_entity -> update_curr:
-	 *   update_curr -> update_burst_penalty -> update_burst_score
-	 *   -> reweight_task_by_prio -> reweight_entity -> update_curr
-	 *
-	 * If already reweighting on this CPU, update load fields directly
-	 * and return. The weight will be applied by the next safe caller.
-	 */
-	if (__this_cpu_read(bore_reweighting)) {
-		load->weight     = weight;
-		load->inv_weight = sched_prio_to_wmult[prio];
-		return;
-	}
-
-	__this_cpu_write(bore_reweighting, true);
 	reweight_entity(cfs_rq, se, weight);
-	__this_cpu_write(bore_reweighting, false);
-
 	load->inv_weight = sched_prio_to_wmult[prio];
 }
 
@@ -664,25 +639,14 @@ static void reset_task_weights_bore(void) {
 	struct rq *rq;
 	struct rq_flags rf;
 
-	/*
-	 * Fix deadlock: original code held write_lock_irq(tasklist_lock)
-	 * then rq_lock_irqsave(). This violates the kernel locking order
-	 * (rq->lock -> tasklist_lock) used in copy_process/release_task,
-	 * causing ABBA deadlock on SMP when user writes to sched_bore sysctl.
-	 *
-	 * Fix: use rcu_read_lock() + task_rq_lock() which acquires rq->lock
-	 * with the correct ordering without needing tasklist_lock for write.
-	 */
-	rcu_read_lock();
+	write_lock_irq(&tasklist_lock);
 	for_each_process(task) {
-		if (task->sched_class != &fair_sched_class)
-			continue;
-		rq = task_rq_lock(task, &rf);
-		update_rq_clock(rq);
+		rq = task_rq(task);
+		rq_lock_irqsave(rq, &rf);
 		reweight_task_by_prio(task, effective_prio(task));
-		task_rq_unlock(rq, task, &rf);
+		rq_unlock_irqrestore(rq, &rf);
 	}
-	rcu_read_unlock();
+	write_unlock_irq(&tasklist_lock);
 }
 
 int sched_bore_update_handler(struct ctl_table *table, int write,
