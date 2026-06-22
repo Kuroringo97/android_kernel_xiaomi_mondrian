@@ -34,7 +34,7 @@ static const u16 boss_penalty_scale[BOSS_TIER_MAX] = {
 	[BOSS_TIER_PRIME]  = 64,	/*  25% */
 };
 
-extern int boss_enabled;
+extern bool boss_enabled;
 
 /* Called from cass.c after cass_best_cpu() selects the target CPU */
 void boss_update_placement_tier(struct task_struct *p,
