@@ -133,5 +133,30 @@ struct proc_dir_entry *nfsd_proc_stat_init(struct net *net)
 void
 nfsd_stat_shutdown(void)
 {
-	svc_proc_unregister(&init_net, "nfsd");
+	int i;
+
+	for (i = 0; i < num; i++)
+		percpu_counter_destroy(&counters[i]);
+}
+
+int nfsd_stat_counters_init(struct nfsd_net *nn)
+{
+	return nfsd_percpu_counters_init(nn->counter, NFSD_STATS_COUNTERS_NUM);
+}
+
+void nfsd_stat_counters_destroy(struct nfsd_net *nn)
+{
+	nfsd_percpu_counters_destroy(nn->counter, NFSD_STATS_COUNTERS_NUM);
+}
+
+struct proc_dir_entry *nfsd_proc_stat_init(struct net *net)
+{
+	struct nfsd_net *nn = net_generic(net, nfsd_net_id);
+
+	return svc_proc_register(net, &nn->nfsd_svcstats, &nfsd_proc_ops);
+}
+
+void nfsd_proc_stat_shutdown(struct net *net)
+{
+	svc_proc_unregister(net, "nfsd");
 }

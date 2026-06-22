@@ -1494,8 +1494,14 @@ static __net_init int nfsd_init_net(struct net *net)
 	get_random_bytes(&nn->siphash_key, sizeof(nn->siphash_key));
 	seqlock_init(&nn->writeverf_lock);
 
+	nfsd4_init_leases_net(nn);
+	get_random_bytes(&nn->siphash_key, sizeof(nn->siphash_key));
+	seqlock_init(&nn->writeverf_lock);
+
 	return 0;
 
+out_drc_error:
+	nfsd_proc_stat_shutdown(net);
 out_proc_error:
 	nfsd_stat_counters_destroy(nn);
 out_repcache_error:
