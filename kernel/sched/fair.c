@@ -24,7 +24,6 @@
  *  Copyright (C) 2021-2024 Masahito Suzuki <firelzrd@gmail.com>
  */
 #include "sched.h"
-#include "boss.h"
 
 #include <trace/hooks/sched.h>
 
@@ -629,14 +628,8 @@ static void update_burst_score(struct sched_entity *se) {
 	p = task_of(se);
 	prev_prio = effective_prio(p);
 
-	if (!((p->flags & PF_KTHREAD) && likely(sched_burst_exclude_kthreads))) {
-		u8 raw = se->burst_penalty >> 2;
-#ifdef CONFIG_SCHED_BOSS
-		burst_score = boss_scale_burst_score(p, raw);
-#else
-		burst_score = raw;
-#endif
-	}
+	if (!((p->flags & PF_KTHREAD) && likely(sched_burst_exclude_kthreads)))
+		burst_score = se->burst_penalty >> 2;
 
 	se->burst_score = burst_score;
 

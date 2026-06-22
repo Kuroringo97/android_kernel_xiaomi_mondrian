@@ -269,7 +269,6 @@ static int cass_select_task_rq(struct task_struct *p, int prev_cpu, int sd_flag,
 			       int wake_flags, bool rt)
 {
 	bool sync;
-	int cpu;
 
 	/* Don't balance on exec since we don't know what @p will look like */
 	if (sd_flag & SD_BALANCE_EXEC)
@@ -288,11 +287,7 @@ static int cass_select_task_rq(struct task_struct *p, int prev_cpu, int sd_flag,
 		sync_entity_load_avg(&p->se);
 
 	sync = (wake_flags & WF_SYNC) && !(current->flags & PF_EXITING);
-	cpu = cass_best_cpu(p, prev_cpu, sync, rt);
-#ifdef CONFIG_SCHED_BOSS
-	boss_update_placement_tier(p, arch_scale_cpu_capacity(cpu));
-#endif
-	return cpu;
+	return cass_best_cpu(p, prev_cpu, sync, rt);
 }
 
 static int cass_select_task_rq_fair(struct task_struct *p, int prev_cpu,

@@ -1397,7 +1397,7 @@ struct task_struct {
 		unsigned	user_dumpable:1;
 		});
 
-	ANDROID_KABI_USE(3, u8 boss_placement_tier); /* BOSS: CPU tier set by CASS on wakeup */
+	ANDROID_KABI_RESERVE(3);
 	ANDROID_KABI_RESERVE(4);
 	ANDROID_KABI_RESERVE(5);
 	ANDROID_KABI_RESERVE(6);
