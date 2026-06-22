@@ -33,7 +33,6 @@
 
 /* ── Global state ───────────────────────────────────── */
 int boss_enabled = 1;
-EXPORT_SYMBOL(boss_enabled);
 
 /*
  * Capacity thresholds derived at boot from CPU topology.
@@ -41,7 +40,6 @@ EXPORT_SYMBOL(boss_enabled);
  * to provide accurate cap_orig for thermal scaling calculations.
  */
 unsigned long boss_tier_cap[BOSS_TIER_MAX];
-EXPORT_SYMBOL(boss_tier_cap);
 
 /* ── Tier map construction ──────────────────────────── */
 /*
@@ -151,9 +149,7 @@ static int __init boss_init(void)
 		boss_tier_cap[BOSS_TIER_BIG],
 		boss_tier_cap[BOSS_TIER_PRIME]);
 
-	if (!register_sysctl("kernel", boss_table))
-		pr_warn("BOSS: sysctl registration failed\n");
-
+	register_sysctl("kernel", boss_table);
 	return 0;
 }
 late_initcall(boss_init);
