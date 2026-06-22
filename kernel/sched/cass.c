@@ -169,12 +169,7 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 		curr->cap_orig = arch_scale_cpu_capacity(cpu);
 
 		/* Get the _current_, throttled maximum capacity of this CPU */
-		{
-			unsigned long thermal = thermal_load_avg(rq);
-
-			curr->cap_max = (thermal >= curr->cap_orig)
-				? 0 : curr->cap_orig - thermal;
-		}
+		curr->cap_max = curr->cap_orig - thermal_load_avg(rq);
 
 		/* Prefer the CPU that more closely meets the uclamp minimum */
 		if (curr->cap_max < uc_min && curr->cap_max < best->cap_max)
@@ -295,14 +290,9 @@ static int cass_select_task_rq(struct task_struct *p, int prev_cpu, int sd_flag,
 	sync = (wake_flags & WF_SYNC) && !(current->flags & PF_EXITING);
 	cpu = cass_best_cpu(p, prev_cpu, sync, rt);
 #ifdef CONFIG_SCHED_BOSS
-	{
-		unsigned long cap_orig = arch_scale_cpu_capacity(cpu);
-		unsigned long thermal  = thermal_load_avg(cpu_rq(cpu));
-		unsigned long cap_max  = (thermal >= cap_orig)
-			? 0 : cap_orig - thermal;
-
-		boss_update_placement_tier(p, cap_orig, cap_max);
-	}
+	boss_update_placement_tier(p, arch_scale_cpu_capacity(cpu),
+				   arch_scale_cpu_capacity(cpu) -
+				   thermal_load_avg(cpu_rq(cpu)));
 #endif
 	return cpu;
 }
