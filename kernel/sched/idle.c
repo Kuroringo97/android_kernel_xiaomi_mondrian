@@ -301,8 +301,6 @@ static void do_idle(void)
 	__current_set_polling();
 	tick_nohz_idle_enter();
 
-	poc_set_cpu_idle(cpu, 1);
-
 	while (!need_resched()) {
 		rmb();
 
@@ -332,8 +330,6 @@ static void do_idle(void)
 		got_tick = tick_nohz_idle_got_tick();
 		arch_cpu_idle_exit();
 	}
-
-	poc_set_cpu_idle(cpu, 0);
 
 	/*
 	 * Since we fell out of the loop above, we know TIF_NEED_RESCHED must

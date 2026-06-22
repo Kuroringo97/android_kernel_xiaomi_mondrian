@@ -2799,22 +2799,3 @@ static inline bool task_may_not_preempt(struct task_struct *task, int cpu)
 	return false;
 }
 #endif /* CONFIG_RT_SOFTINT_OPTIMIZATION */
-
-/* POC: Piece-Of-Cake idle CPU selector (5.10 backport) */
-#ifdef CONFIG_SCHED_POC_SELECTOR
-extern int poc_selector_enabled;
-void poc_set_cpu_idle(int cpu, int state);
-int poc_select_idle_cpu(struct sched_domain *sd, struct cpumask *cpus);
-void poc_init_llc(struct sched_domain_shared *sd_share, int sd_id,
-		  const struct cpumask *sd_span);
-static inline void poc_init(void) {}
-#else
-static inline void poc_set_cpu_idle(int cpu, int state) {}
-static inline int poc_select_idle_cpu(struct sched_domain *sd,
-				      struct cpumask *cpus)
-{
-	return -1;
-}
-static inline void poc_init_llc(struct sched_domain_shared *sd_share, int sd_id,
-				const struct cpumask *sd_span) {}
-#endif

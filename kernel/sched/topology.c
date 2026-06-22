@@ -1412,7 +1412,6 @@ sd_init(struct sched_domain_topology_level *tl,
 		sd->shared = *per_cpu_ptr(sdd->sds, sd_id);
 		atomic_inc(&sd->shared->ref);
 		atomic_set(&sd->shared->nr_busy_cpus, sd_weight);
-		poc_init_llc(sd->shared, sd_id, sched_domain_span(sd));
 	}
 
 	sd->private = sdd;
