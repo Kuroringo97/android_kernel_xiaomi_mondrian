@@ -5,27 +5,21 @@
  * Bridges CASS placement awareness with BORE burst penalization.
  *
  * CASS selects the best CPU for a task and knows that CPU's raw
- * capacity (cap_orig) and current throttled capacity (cap_max).
- * BOSS uses cap_orig to classify the placement into a tier
- * (LITTLE/BIG/PRIME) based on actual hardware topology, and uses
- * cap_max to detect thermal throttling for hybrid penalty scaling.
+ * capacity (cap_orig). BOSS uses this to classify the placement
+ * into a tier (LITTLE/BIG/PRIME) based on actual hardware topology
+ * and stores it in task->boss_placement_tier.
  *
- * Both values are stored on the task and read by BORE's
- * update_burst_score() to scale the burst penalty accordingly:
- *
- *   - Severe throttle (cap_max < 50% cap_orig): tier is downgraded,
- *     task receives the penalty of the next lower tier.
- *   - Mild throttle (cap_max >= 50% cap_orig): tier is preserved but
- *     penalty is interpolated between current and next lower tier
- *     based on throttle severity.
- *   - No throttle: original tier penalty applies unchanged.
+ * BORE's burst penalty is then scaled by this tier: tasks placed
+ * on high-capacity cores are penalized less for bursting, since
+ * bursting on a Prime core is expected and efficient behaviour.
+ * Tasks placed on efficiency cores receive the full BORE penalty.
  *
  * CPU tiers are derived at boot from arch_scale_cpu_capacity() —
  * no hardcoded values, works on any SoC topology.
  *
- * Result: CASS and BORE become mutually aware. CPU placement and
- * thermal state both inform burst policy. Neither subsystem is
- * modified beyond a single read/write per scheduling event.
+ * Result: CASS and BORE become mutually aware. CPU placement
+ * informs burst policy. Neither subsystem is modified beyond a
+ * single read/write per scheduling event.
  */
 
 #include <linux/sched.h>
@@ -101,19 +95,13 @@ static inline u8 boss_cap_to_tier(unsigned long cap_orig)
 /* ── Placement update (called from cass.c) ──────────── */
 /*
  * Called by CASS after selecting the target CPU for a task.
- * Classifies cap_orig into a tier and stores cap_max for thermal
- * scaling. Both are cached on the task for zero-cost reads in
- * update_burst_score().
- *
- * cap_max is clamped to u16 range. ARM capacity values are in
- * [0..1024] so u16 is sufficient.
+ * Classifies cap_orig into a tier and caches it on the task.
+ * One WRITE_ONCE — zero cost on the read side in update_burst_score().
  */
 void boss_update_placement_tier(struct task_struct *p,
-				unsigned long cap_orig,
-				unsigned long cap_max)
+				unsigned long cap_orig)
 {
 	WRITE_ONCE(p->boss_placement_tier, boss_cap_to_tier(cap_orig));
-	WRITE_ONCE(p->boss_cap_max, (u16)min(cap_max, (unsigned long)U16_MAX));
 }
 
 /* ── Sysctl ─────────────────────────────────────────── */

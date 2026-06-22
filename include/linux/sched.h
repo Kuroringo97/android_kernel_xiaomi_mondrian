@@ -1398,7 +1398,7 @@ struct task_struct {
 		});
 
 	ANDROID_KABI_USE(3, u8 boss_placement_tier); /* BOSS: CPU tier set by CASS on wakeup */
-	ANDROID_KABI_USE(4, u16 boss_cap_max); /* BOSS: throttled capacity set by CASS on wakeup */
+	ANDROID_KABI_RESERVE(4);
 	ANDROID_KABI_RESERVE(5);
 	ANDROID_KABI_RESERVE(6);
 	ANDROID_KABI_RESERVE(7);
