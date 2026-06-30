@@ -32,49 +32,6 @@ static bool supports_scale_freq_counters(const struct cpumask *cpus)
 	return cpumask_subset(cpus, &scale_freq_counters_mask);
 }
 
-DEFINE_PER_CPU(unsigned long, arch_freq_scale) = SCHED_CAPACITY_SCALE;
-EXPORT_PER_CPU_SYMBOL_GPL(arch_freq_scale);
-
-void topology_set_scale_freq_source(struct scale_freq_data *data,
-				    const struct cpumask *cpus)
-{
-	struct scale_freq_data *cur_sfd;
-	int cpu;
-
-	for_each_cpu(cpu, cpus) {
-		cur_sfd = rcu_dereference_protected(per_cpu(sft_data, cpu),
-				lockdep_is_held(&sched_domains_mutex));
-		if (cur_sfd && cur_sfd->source > data->source)
-			continue;
-
-		rcu_assign_pointer(per_cpu(sft_data, cpu), data);
-		cpumask_set_cpu(cpu, &scale_freq_counters_mask);
-	}
-
-	scale_freq_invariant = supports_scale_freq_counters(cpu_online_mask);
-}
-EXPORT_SYMBOL_GPL(topology_set_scale_freq_source);
-
-void topology_clear_scale_freq_source(enum scale_freq_source source,
-				      const struct cpumask *cpus)
-{
-	struct scale_freq_data *cur_sfd;
-	int cpu;
-
-	for_each_cpu(cpu, cpus) {
-		cur_sfd = rcu_dereference_protected(per_cpu(sft_data, cpu),
-				lockdep_is_held(&sched_domains_mutex));
-		if (!cur_sfd || cur_sfd->source != source)
-			continue;
-
-		rcu_assign_pointer(per_cpu(sft_data, cpu), NULL);
-		cpumask_clear_cpu(cpu, &scale_freq_counters_mask);
-	}
-
-	scale_freq_invariant = supports_scale_freq_counters(cpu_online_mask);
-}
-EXPORT_SYMBOL_GPL(topology_clear_scale_freq_source);
-
 bool topology_scale_freq_invariant(void)
 {
 	return cpufreq_supports_freq_invariance() ||
