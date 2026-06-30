@@ -26,9 +26,6 @@
 #include <linux/mutex.h>
 #include <linux/cpu.h>
 #include <linux/spinlock.h>
-#include <linux/kthread.h>
-#include <linux/freezer.h>
-#include <linux/wait.h>
 #include <trace/hooks/sched.h>
 #include <soc/qcom/dcvs.h>
 #include <soc/qcom/pmu_lib.h>
@@ -44,7 +41,6 @@
 #define SPM_FREQ_THRES 2000U
 #define L2MISS_RATIO_THRES 150U
 #define SPM_CPU_FREQ_IGN 200U
-#define LUT_MAX_ENTRIES			40U
 
 enum common_ev_idx {
 	INST_IDX,
@@ -87,60 +83,23 @@ struct cpu_ctrs {
 	u64				grp_ctrs[MAX_MEMLAT_GRPS][NUM_GRP_EVS];
 };
 
-struct cpu_snap {
-	struct cpu_ctrs		ctrs;
-	bool			idle_sample;
-	ktime_t			sample_ts;
-};
-
 struct cpu_stats {
-	struct cpu_snap			*cur_ptr[2] __aligned(16);
-	struct cpu_snap			cur[2];
-	ktime_t				prod_ts;
-	struct qcom_pmu_data		raw_ctrs;
 	struct cpu_ctrs			prev;
+	struct cpu_ctrs			curr;
 	struct cpu_ctrs			delta;
-	ktime_t				cons_ts;
+	struct qcom_pmu_data		raw_ctrs;
+	bool				idle_sample;
+	ktime_t				sample_ts;
+	ktime_t				last_sample_ts;
+	spinlock_t			ctrs_lock;
 	u32				freq_mhz;
 	u32				fe_stall_pct;
 	u32				be_stall_pct;
 	u32				ipm[MAX_MEMLAT_GRPS];
 	u32				wb_pct[MAX_MEMLAT_GRPS];
 	u32				spm[MAX_MEMLAT_GRPS];
+	u32				l2miss_ratio[MAX_MEMLAT_GRPS];
 };
-
-#define snap_read_cur_ptrs(stats, v1, v2)                               \
-        asm volatile("ldp %[a], %[b], %[m]"                            \
-                     : [a] "=r" (v1), [b] "=r" (v2)                    \
-                     : [m] "Q" (*(__uint128_t *)(stats)->cur_ptr))
-
-#define __SNAP_CMPXCHG_DBL(stats, new1_expr, new2_expr)                 \
-        struct cpu_snap *old1, *old2, *new1, *new2;                     \
-        do {                                                            \
-                snap_read_cur_ptrs(stats, old1, old2);                  \
-                new1 = (new1_expr); new2 = (new2_expr);                 \
-        } while (!cmpxchg_double_local(&(stats)->cur_ptr[0],           \
-                                       &(stats)->cur_ptr[1],           \
-                                       old1, old2, new1, new2))
-
-#define snap_get_cur_reader(stats) \
-({                                                                      \
-        __SNAP_CMPXCHG_DBL(stats, NULL, old1 ? old2 : NULL);          \
-        old1 ? old1 : old2;                                            \
-})
-#define snap_get_cur_writer(stats) \
-({                                                                      \
-        __SNAP_CMPXCHG_DBL(stats, old2 ? old1 : NULL, NULL);          \
-        old2 ? old2 : old1;                                            \
-})
-#define snap_put_cur_reader(stats, cur) \
-({                                                                      \
-        __SNAP_CMPXCHG_DBL(stats, old2 ? cur : old1, old2 ? old2 : cur); \
-})
-#define snap_put_cur_writer(stats, cur) \
-({                                                                      \
-        __SNAP_CMPXCHG_DBL(stats, cur, old1 ? old1 : old2);           \
-})
 
 struct cpufreq_memfreq_map {
 	unsigned int			cpufreq_mhz;
@@ -210,9 +169,8 @@ struct memlat_dev_data {
 	struct device			*dev;
 	struct kobject			kobj;
 	u32				common_ev_ids[NUM_COMMON_EVS];
-	struct task_struct		*task;
-	wait_queue_head_t		waitq;
-	atomic_t			kick;
+	struct work_struct		work;
+	struct workqueue_struct		*memlat_wq;
 	u32				sample_ms;
 	struct hrtimer			timer;
 	ktime_t				last_update_ts;
@@ -799,7 +757,8 @@ out:
 
 static void calculate_sampling_stats(void)
 {
-	int i, grp, cpu;
+	int i, grp, cpu, level = 0;
+	unsigned long flags;
 	struct cpu_stats *stats;
 	struct cpu_ctrs *delta;
 	struct memlat_group *memlat_grp;
@@ -809,27 +768,32 @@ static void calculate_sampling_stats(void)
 	update_us = ktime_us_delta(now, memlat_data->last_update_ts);
 	memlat_data->last_update_ts = now;
 
+	local_irq_save(flags);
 	for_each_possible_cpu(cpu) {
-		struct cpu_snap *snap_ptr;
+		stats = per_cpu(sampling_stats, cpu);
+		if (level == 0)
+			spin_lock(&stats->ctrs_lock);
+		else
+			spin_lock_nested(&stats->ctrs_lock, level);
+		level++;
+	}
 
+	for_each_possible_cpu(cpu) {
 		stats = per_cpu(sampling_stats, cpu);
 		delta = &stats->delta;
-
-		snap_ptr = snap_get_cur_reader(stats);
-		smp_rmb();
-
-		if (snap_ptr->idle_sample) {
+		/* use update_us and now to synchronize idle cpus */
+		if (stats->idle_sample) {
 			delta_us = update_us;
-			stats->cons_ts = now;
+			stats->last_sample_ts = now;
 		} else {
-			delta_us = ktime_us_delta(snap_ptr->sample_ts,
-						  stats->cons_ts);
-			stats->cons_ts = snap_ptr->sample_ts;
+			delta_us = ktime_us_delta(stats->sample_ts,
+							stats->last_sample_ts);
+			stats->last_sample_ts = stats->sample_ts;
 		}
 		for (i = 0; i < NUM_COMMON_EVS; i++) {
 			if (!memlat_data->common_ev_ids[i])
 				continue;
-			delta->common_ctrs[i] = snap_ptr->ctrs.common_ctrs[i] -
+			delta->common_ctrs[i] = stats->curr.common_ctrs[i] -
 						stats->prev.common_ctrs[i];
 		}
 
@@ -841,27 +805,24 @@ static void calculate_sampling_stats(void)
 				if (!memlat_grp->grp_ev_ids[i])
 					continue;
 				delta->grp_ctrs[grp][i] =
-					snap_ptr->ctrs.grp_ctrs[grp][i] -
-					stats->prev.grp_ctrs[grp][i];
+					    stats->curr.grp_ctrs[grp][i] -
+					    stats->prev.grp_ctrs[grp][i];
 			}
 		}
 
-		stats->freq_mhz = delta_us > 0 ?
-			delta->common_ctrs[CYC_IDX] / (u64)delta_us : 0;
-
+		stats->freq_mhz = delta->common_ctrs[CYC_IDX] / delta_us;
 		if (!memlat_data->common_ev_ids[FE_STALL_IDX])
 			stats->fe_stall_pct = 100;
 		else
 			stats->fe_stall_pct = mult_frac(100,
-					delta->common_ctrs[FE_STALL_IDX],
-					delta->common_ctrs[CYC_IDX]);
+					       delta->common_ctrs[FE_STALL_IDX],
+					       delta->common_ctrs[CYC_IDX]);
 		if (!memlat_data->common_ev_ids[BE_STALL_IDX])
 			stats->be_stall_pct = 100;
 		else
 			stats->be_stall_pct = mult_frac(100,
-					delta->common_ctrs[BE_STALL_IDX],
-					delta->common_ctrs[CYC_IDX]);
-
+					       delta->common_ctrs[BE_STALL_IDX],
+					       delta->common_ctrs[CYC_IDX]);
 		for (grp = 0; grp < MAX_MEMLAT_GRPS; grp++) {
 			memlat_grp = memlat_data->groups[grp];
 			if (!memlat_grp) {
@@ -874,33 +835,45 @@ static void calculate_sampling_stats(void)
 				stats->ipm[grp] /=
 					delta->grp_ctrs[grp][MISS_IDX];
 
+			if (delta->grp_ctrs[grp][MISS_IDX] > 0)
+				stats->l2miss_ratio[grp] = mult_frac(100,
+					delta->grp_ctrs[DCVS_L3][MISS_IDX],
+					delta->grp_ctrs[grp][MISS_IDX]);
+			else
+				stats->l2miss_ratio[grp] =
+				(delta->grp_ctrs[DCVS_L3][MISS_IDX] * 100);
+
 			stats->spm[grp] = delta->common_ctrs[BE_STALL_IDX];
-			if ((grp == DCVS_DDR) &&
-			    (delta->grp_ctrs[DCVS_L3][MISS_IDX]))
-				stats->spm[DCVS_DDR] /=
-					delta->grp_ctrs[DCVS_L3][MISS_IDX];
+			if (delta->grp_ctrs[grp][MISS_IDX])
+				stats->spm[grp] /=
+					delta->grp_ctrs[grp][MISS_IDX];
 			else
 				stats->spm[grp] = 0;
-
-			if (!memlat_grp->grp_ev_ids[WB_IDX] ||
-			    !memlat_grp->grp_ev_ids[ACC_IDX])
+			if (!memlat_grp->grp_ev_ids[WB_IDX]
+					|| !memlat_grp->grp_ev_ids[ACC_IDX])
 				stats->wb_pct[grp] = 0;
 			else
 				stats->wb_pct[grp] = mult_frac(100,
-					delta->grp_ctrs[grp][WB_IDX],
-					delta->grp_ctrs[grp][ACC_IDX]);
+						delta->grp_ctrs[grp][WB_IDX],
+						delta->grp_ctrs[grp][ACC_IDX]);
 
+			/* one meas event per memlat_group with group name */
 			trace_memlat_dev_meas(dev_name(memlat_grp->dev), cpu,
-				delta->common_ctrs[INST_IDX],
-				delta->grp_ctrs[grp][MISS_IDX],
-				stats->freq_mhz, stats->be_stall_pct,
-				stats->wb_pct[grp], stats->ipm[grp],
-				stats->fe_stall_pct);
-		}
+					delta->common_ctrs[INST_IDX],
+					delta->grp_ctrs[grp][MISS_IDX],
+					stats->freq_mhz, stats->be_stall_pct,
+					stats->wb_pct[grp], stats->ipm[grp],
+					stats->fe_stall_pct);
 
-		stats->prev = snap_ptr->ctrs;
-		snap_put_cur_reader(stats, snap_ptr);
+		}
+		memcpy(&stats->prev, &stats->curr, sizeof(stats->curr));
 	}
+
+	for_each_possible_cpu(cpu) {
+		stats = per_cpu(sampling_stats, cpu);
+		spin_unlock(&stats->ctrs_lock);
+	}
+	local_irq_restore(flags);
 }
 
 static inline void set_higher_freq(int *max_cpu, int cpu, u32 *max_cpufreq,
@@ -1119,7 +1092,7 @@ static void update_memlat_fp_vote(int cpu, u32 *fp_freqs)
 }
 
 /* sampling path update work */
-static void memlat_update_work(void)
+static void memlat_update_work(struct work_struct *work)
 {
 	int i, grp, ret;
 	struct memlat_group *memlat_grp;
@@ -1165,30 +1138,11 @@ static void memlat_update_work(void)
 	}
 }
 
-static int memlat_thread(void *data)
-{
-	set_freezable();
-
-	while (true) {
-		wait_event_freezable(memlat_data->waitq,
-			atomic_read(&memlat_data->kick) || kthread_should_stop());
-
-		if (kthread_freezable_should_stop(NULL))
-			break;
-
-		atomic_set(&memlat_data->kick, 0);
-
-		calculate_sampling_stats();
-		memlat_update_work();
-	}
-
-	return 0;
-}
-
 static enum hrtimer_restart memlat_hrtimer_handler(struct hrtimer *timer)
 {
-	if (!atomic_xchg(&memlat_data->kick, 1))
-		wake_up(&memlat_data->waitq);
+	calculate_sampling_stats();
+	queue_work(memlat_data->memlat_wq, &memlat_data->work);
+
 	return HRTIMER_NORESTART;
 }
 
@@ -1209,11 +1163,14 @@ static void memlat_jiffies_update_cb(void *unused, void *extra)
 	}
 }
 
-static void process_raw_ctrs_to_snap(struct cpu_stats *stats,
-				     struct cpu_snap *snap)
+/*
+ * Note: must hold stats->ctrs_lock and populate stats->raw_ctrs
+ * before calling this API.
+ */
+static void process_raw_ctrs(struct cpu_stats *stats)
 {
 	int i, grp, idx;
-	struct cpu_ctrs *ctrs = &snap->ctrs;
+	struct cpu_ctrs *curr_ctrs = &stats->curr;
 	struct qcom_pmu_data *raw_ctrs = &stats->raw_ctrs;
 	struct memlat_group *memlat_grp;
 	u32 event_id;
@@ -1228,7 +1185,7 @@ static void process_raw_ctrs_to_snap(struct cpu_stats *stats,
 		for (idx = 0; idx < NUM_COMMON_EVS; idx++) {
 			if (event_id != memlat_data->common_ev_ids[idx])
 				continue;
-			ctrs->common_ctrs[idx] = ev_data;
+			curr_ctrs->common_ctrs[idx] = ev_data;
 			break;
 		}
 		if (idx < NUM_COMMON_EVS)
@@ -1241,7 +1198,7 @@ static void process_raw_ctrs_to_snap(struct cpu_stats *stats,
 			for (idx = 0; idx < NUM_GRP_EVS; idx++) {
 				if (event_id != memlat_grp->grp_ev_ids[idx])
 					continue;
-				ctrs->grp_ctrs[grp][idx] = ev_data;
+				curr_ctrs->grp_ctrs[grp][idx] = ev_data;
 				break;
 			}
 		}
@@ -1251,23 +1208,16 @@ static void process_raw_ctrs_to_snap(struct cpu_stats *stats,
 static void memlat_pmu_idle_cb(struct qcom_pmu_data *data, int cpu, int state)
 {
 	struct cpu_stats *stats = per_cpu(sampling_stats, cpu);
-	struct cpu_snap *snap;
 	unsigned long flags;
 
 	if (unlikely(!memlat_data->inited))
 		return;
 
-	local_irq_save(flags);
+	spin_lock_irqsave(&stats->ctrs_lock, flags);
 	memcpy(&stats->raw_ctrs, data, sizeof(*data));
-	snap = snap_get_cur_writer(stats);
-	memset(&snap->ctrs, 0, sizeof(snap->ctrs));
-	process_raw_ctrs_to_snap(stats, snap);
-	snap->idle_sample = true;
-	snap->sample_ts = ktime_get();
-	smp_wmb();
-	snap_put_cur_writer(stats, snap);
-	stats->prod_ts = snap->sample_ts;
-	local_irq_restore(flags);
+	process_raw_ctrs(stats);
+	stats->idle_sample = true;
+	spin_unlock_irqrestore(&stats->ctrs_lock, flags);
 }
 
 static struct qcom_pmu_notif_node memlat_idle_notif = {
@@ -1280,36 +1230,27 @@ static void memlat_sched_tick_cb(void *unused, struct rq *rq)
 	struct cpu_stats *stats = per_cpu(sampling_stats, cpu);
 	ktime_t now = ktime_get();
 	s64 delta_ns;
-	struct cpu_snap *snap;
 	unsigned long flags;
 
 	if (unlikely(!memlat_data->inited))
 		return;
 
-	delta_ns = now - stats->prod_ts + HALF_TICK_NS;
+	spin_lock_irqsave(&stats->ctrs_lock, flags);
+	delta_ns = now - stats->last_sample_ts + HALF_TICK_NS;
 	if (delta_ns < ms_to_ktime(memlat_data->sample_ms))
-		return;
-
-	local_irq_save(flags);
-
+		goto out;
+	stats->sample_ts = now;
+	stats->idle_sample = false;
 	stats->raw_ctrs.num_evs = 0;
 	ret = qcom_pmu_read_all_local(&stats->raw_ctrs);
 	if (ret < 0 || stats->raw_ctrs.num_evs == 0) {
 		pr_err("error reading pmu counters on cpu%d: %d\n", cpu, ret);
 		goto out;
 	}
-
-	snap = snap_get_cur_writer(stats);
-	memset(&snap->ctrs, 0, sizeof(snap->ctrs));
-	process_raw_ctrs_to_snap(stats, snap);
-	snap->sample_ts = now;
-	snap->idle_sample = false;
-	smp_wmb();
-	snap_put_cur_writer(stats, snap);
-	stats->prod_ts = now;
+	process_raw_ctrs(stats);
 
 out:
-	local_irq_restore(flags);
+	spin_unlock_irqrestore(&stats->ctrs_lock, flags);
 }
 
 static void get_mpidr_cpu(void *cpu)
@@ -1422,22 +1363,16 @@ static int memlat_sampling_init(void)
 		stats = devm_kzalloc(dev, sizeof(*stats), GFP_KERNEL);
 		if (!stats)
 			return -ENOMEM;
-
-		stats->cur_ptr[0] = &stats->cur[0];
-		stats->cur_ptr[1] = &stats->cur[1];
-		stats->prod_ts = stats->cons_ts = ktime_get();
 		per_cpu(sampling_stats, cpu) = stats;
+		spin_lock_init(&stats->ctrs_lock);
 	}
 
-	init_waitqueue_head(&memlat_data->waitq);
-	atomic_set(&memlat_data->kick, 0);
-
-	memlat_data->task = kthread_run(memlat_thread, NULL, "memlat_kthread");
-	if (IS_ERR(memlat_data->task)) {
-		dev_err(dev, "Failed to create memlat kthread: %ld\n",
-			PTR_ERR(memlat_data->task));
-		return PTR_ERR(memlat_data->task);
+	memlat_data->memlat_wq = create_freezable_workqueue("memlat_wq");
+	if (!memlat_data->memlat_wq) {
+		dev_err(dev, "Couldn't create memlat workqueue.\n");
+		return -ENOMEM;
 	}
+	INIT_WORK(&memlat_data->work, &memlat_update_work);
 
 	hrtimer_init(&memlat_data->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	memlat_data->timer.function = memlat_hrtimer_handler;
