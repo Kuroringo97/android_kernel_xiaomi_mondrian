@@ -27,15 +27,21 @@ void poc_set_cpu_idle(int cpu, int state)
 	if (!poc_selector_enabled)
 		return;
 
+	rcu_read_lock_sched();
+
 	sd = rcu_dereference_sched(*per_cpu_ptr(&sd_llc, cpu));
-	if (!sd || !sd->shared)
+	if (!sd || !sd->shared || !sd->shared->poc_fast_eligible) {
+		rcu_read_unlock_sched();
 		return;
+	}
 
 	mask = 1ULL << (cpu - sd->shared->poc_cpu_base);
 	if (state)
 		atomic64_or(mask, &sd->shared->poc_idle_cpus);
 	else
 		atomic64_andnot(mask, &sd->shared->poc_idle_cpus);
+
+	rcu_read_unlock_sched();
 }
 
 /*
@@ -45,16 +51,34 @@ void poc_set_cpu_idle(int cpu, int state)
 int poc_select_idle_cpu(struct sched_domain *sd, struct cpumask *cpus)
 {
 	struct sched_domain_shared *sd_share = sd->shared;
-	u64 bitmap, mask;
-	int base, cpu;
+	u64 bitmap, mask, lo, hi;
+	int base, base_word, shift, cpu;
 
-	/* LLC has more than 64 CPUs — bitmap can't represent it */
-	if (!sd_share->poc_fast_eligible)
+	if (!poc_selector_enabled)
 		return -1;
 
-	/* Build affinity mask: task's cpus_ptr ∩ LLC span */
+	/* No shared domain state, or LLC too wide for the bitmap */
+	if (!sd_share || !sd_share->poc_fast_eligible)
+		return -1;
+
+	/*
+	 * Build affinity mask: task's cpus_ptr ∩ LLC span, realigned from
+	 * absolute cpumask bit positions to LLC-relative bit positions
+	 * (bit 0 == poc_cpu_base). poc_cpu_base is not guaranteed to be
+	 * 64-aligned, so a plain word fetch is not enough — shift in the
+	 * carry from the next word whenever base isn't word-aligned.
+	 */
 	base = sd_share->poc_cpu_base;
-	mask = cpumask_bits(cpus)[base >> 6];
+	base_word = base >> 6;
+	shift = base & 63;
+
+	lo = cpumask_bits(cpus)[base_word];
+	if (shift) {
+		hi = cpumask_bits(cpus)[base_word + 1];
+		mask = (lo >> shift) | (hi << (64 - shift));
+	} else {
+		mask = lo;
+	}
 
 	/* Intersect with idle bitmap */
 	bitmap = atomic64_read(&sd_share->poc_idle_cpus) & mask;
