@@ -129,8 +129,8 @@ do_gc:
 			sync_mode = false;
 
 		/* if return value is not zero, no victim was selected */
-		if (f2fs_gc(sbi, sync_mode, true, NULL_SEGNO)) {
-			if (sbi->gc_mode == GC_URGENT)
+		if (f2fs_gc(sbi, sync_mode, true, false, NULL_SEGNO)) {
+			if (sbi->gc_mode == GC_URGENT_HIGH)
 				wait_ms = gc_th->urgent_sleep_time;
 			else
 				wait_ms = gc_th->no_gc_sleep_time;
