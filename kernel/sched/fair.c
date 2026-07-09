@@ -6388,7 +6388,7 @@ static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, int t
 	 * Due to large variance we need a large fuzz factor; hackbench in
 	 * particularly is sensitive here.
 	 */
-	avg_idle = this_rq()->avg_idle / 512;
+	avg_idle = this_rq()->avg_idle / 256;
 	avg_cost = this_sd->avg_scan_cost + 1;
 
 	if (sched_feat(SIS_AVG_CPU) && avg_idle < avg_cost)
@@ -6396,10 +6396,10 @@ static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, int t
 
 	if (sched_feat(SIS_PROP)) {
 		u64 span_avg = sd->span_weight * avg_idle;
-		if (span_avg > 4*avg_cost)
+		if (span_avg > 2*avg_cost)
 			nr = div_u64(span_avg, avg_cost);
 		else
-			nr = 4;
+			nr = 2;
 	}
 
 	time = cpu_clock(this);
@@ -6490,7 +6490,11 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target)
 		util_max = uclamp_eff_value(p, UCLAMP_MAX);
 	}
 
-	if ((available_idle_cpu(target) || sched_idle_cpu(target)) &&
+	if (sched_idle_cpu(target) &&
+	    asym_fits_cpu(task_util, util_min, util_max, target))
+		return target;
+
+	if (available_idle_cpu(target) &&
 	    asym_fits_cpu(task_util, util_min, util_max, target))
 		return target;
 

@@ -361,10 +361,20 @@ static unsigned long sugov_get_util(struct sugov_cpu *sg_cpu)
 {
 	struct rq *rq = cpu_rq(sg_cpu->cpu);
 	unsigned long util = cpu_util_cfs(rq);
+	unsigned long runnable = READ_ONCE(rq->cfs.avg.runnable_avg);
 	unsigned long max = arch_scale_cpu_capacity(sg_cpu->cpu);
 
 	sg_cpu->max = max;
 	sg_cpu->bw_dl = cpu_bw_dl(rq);
+
+	/*
+	 * Contention-aware frequency selection (backported from 6.5+):
+	 * When runnable_avg > util_avg, multiple tasks are waiting for CPU.
+	 * Use the maximum to prevent premature downclocking under contention.
+	 * This ensures adequate frequency when nr_running > 1, improving
+	 * multi-threaded workload performance.
+	 */
+	util = max(util, runnable);
 
 	return schedutil_cpu_util(sg_cpu->cpu, util, max, FREQUENCY_UTIL, NULL);
 }
