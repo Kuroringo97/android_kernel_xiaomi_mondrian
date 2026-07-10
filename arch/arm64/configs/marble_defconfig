@@ -1170,7 +1170,8 @@ CONFIG_ZBLOCK=y
 CONFIG_ZRAM_USE_ZBLOCK=y
 CONFIG_CRYPTO_ZSTD=y
 
-# Disable Debug/Experimental (Optional but recommended)
+# MGLRU 
+CONFIG_LRU_GEN=y
 
 # CONFIG_RANDOM_DEFAULT_IMPL is not set
 CONFIG_LRNG=y
