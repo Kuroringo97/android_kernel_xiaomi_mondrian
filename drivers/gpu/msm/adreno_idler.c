@@ -34,7 +34,7 @@
 #include "msm_adreno_devfreq.h"
 
 #define ADRENO_IDLER_MAJOR_VERSION 1
-#define ADRENO_IDLER_MINOR_VERSION 1
+#define ADRENO_IDLER_MINOR_VERSION 2
 
 /* stats.busy_time threshold for determining if the given workload is idle.
    Any workload higher than this will be treated as a non-idle workload.
@@ -62,30 +62,59 @@ module_param_named(adreno_idler_active, adreno_idler_active, bool, 0664);
 
 static unsigned int idlecount = 0;
 
+/* Look up the power level index matching a given frequency.
+   Returns -1 if not found in the table. */
+static int adreno_idler_get_level(struct devfreq *devfreq, unsigned long freq)
+{
+	int i;
+
+	for (i = 0; i < devfreq->profile->max_state; i++)
+		if (devfreq->profile->freq_table[i] == freq)
+			return i;
+
+	return -1;
+}
+
 int adreno_idler(struct devfreq_dev_status stats, struct devfreq *devfreq,
 		 unsigned long *freq)
 {
+	int level, max_level;
+
 	if (!adreno_idler_active)
 		return 0;
+
+	max_level = devfreq->profile->max_state - 1;
 
 	if (stats.busy_time < idleworkload) {
 		/* busy_time >= idleworkload should be considered as a non-idle workload. */
 		idlecount++;
-		if (*freq == devfreq->profile->freq_table[devfreq->profile->max_state - 1]) {
+		if (*freq == devfreq->profile->freq_table[max_level]) {
 			/* Frequency is already at its lowest.
 			   No need to calculate things, so bail out. */
 			return 1;
 		}
 		if (idlecount >= idlewait &&
 		    stats.busy_time * 100 < stats.total_time * downdifferential) {
-			/* We are idle for (idlewait + 1)'th time! Ramp down the frequency now. */
-			*freq = devfreq->profile->freq_table[devfreq->profile->max_state - 1];
+			/* We are idle for (idlewait + 1)'th time! Ramp down now. */
+			level = adreno_idler_get_level(devfreq, *freq);
+			if (level < 0 || level >= max_level) {
+				/* Freq not found in table or already
+				   at floor; fall back to a direct
+				   clamp so we never get stuck. */
+				*freq = devfreq->profile->freq_table[max_level];
+			} else {
+				/* Step down a single power level instead
+				   of jumping straight to the floor. If
+				   idle persists, subsequent samples will
+				   keep stepping down naturally. */
+				*freq = devfreq->profile->freq_table[level + 1];
+			}
 			idlecount--;
 			return 1;
 		}
 	} else if (state_suspended_1) {
 		/* GPU shouldn't be used for much while display is off, so ramp down the frequency */
-		*freq = devfreq->profile->freq_table[devfreq->profile->max_state - 1];
+		*freq = devfreq->profile->freq_table[max_level];
 		return 1;
 	} else {
 		idlecount = 0;
