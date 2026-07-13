@@ -53,9 +53,6 @@ int adreno_wake_nice = -7;
 /* Number of milliseconds to stay active active after a wake on touch */
 unsigned int adreno_wake_timeout = 100;
 
-extern int adreno_idler_init(void);
-extern void adreno_idler_exit(void);
-
 static u32 get_ucode_version(const u32 *data)
 {
 	u32 version;
@@ -3745,8 +3742,6 @@ static int __init kgsl_3d_init(void)
 		kgsl_core_exit();
 	}
 
-	adreno_idler_init();
-
 	return ret;
 }
 
@@ -3756,7 +3751,6 @@ static void __exit kgsl_3d_exit(void)
 	gmu_core_unregister();
 	kgsl_mmu_exit();
 	kgsl_core_exit();
-	adreno_idler_exit();
 }
 
 module_init(kgsl_3d_init);

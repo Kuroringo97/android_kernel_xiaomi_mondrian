@@ -56,7 +56,6 @@ msm_kgsl-y += \
 	adreno_sysfs.o \
 	adreno_trace.o \
 	governor_msm_adreno_tz.o \
-	adreno_idler.o \
 	governor_gpubw_mon.o
 
 msm_kgsl-$(CONFIG_COMPAT) += adreno_compat.o
