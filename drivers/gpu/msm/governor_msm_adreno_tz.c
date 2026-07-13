@@ -361,20 +361,6 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 	}
 
 	*freq = stats->current_frequency;
-
-	/*
-	 * Force to use & record as min freq when system has
-	 * entered pm-suspend or screen-off state. Reset the bin
-	 * counters so stale telemetry accumulated while suspended
-	 * doesn't skew the frequency decision on resume.
-	 */
-	if (suspended || state_suspended_1) {
-		*freq = devfreq->profile->freq_table[devfreq->profile->max_state - 1];
-		priv->bin.total_time = 0;
-		priv->bin.busy_time = 0;
-		return 0;
-	}
-
 	priv->bin.total_time += stats->total_time;
 
 	/* Update gpu busy time as per mod_percent */
@@ -391,6 +377,7 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 		stats->busy_time >>= 7;
 		stats->total_time >>= 7;
 	}
+
 
 
 	if (stats->private_data)
@@ -429,8 +416,10 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 			priv->bin.busy_time, context_count, priv);
 	}
 
+	#if 0
 	priv->bin.total_time = 0;
 	priv->bin.busy_time = 0;
+	#endif
 
 	/*
 	 * If the decision is to move to a different level, make sure the GPU
