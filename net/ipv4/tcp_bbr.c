@@ -273,9 +273,10 @@ static const u32 bbr_extra_acked_max_us = 100 * 1000;
 static const bool bbr_precise_ece_ack = true;
 
 /* Max RTT (in usec) at which to use sender-side ECN logic.
+ * Raised to 100ms to enable ECN for gaming workloads (10-100ms typical RTT).
  * Disabled when 0 (ECN allowed at any RTT).
  */
-static const u32 bbr_ecn_max_rtt_us = 5000;
+static const u32 bbr_ecn_max_rtt_us = 100000;
 
 /* On losses, scale down inflight and pacing rate by beta scaled by BBR_SCALE.
  * No loss response when 0.
@@ -296,9 +297,10 @@ static const u32 bbr_ecn_alpha_init = BBR_UNIT;
 static const u32 bbr_ecn_factor = BBR_UNIT * 1 / 3;	 /* 1/3 = 33% */
 
 /* Estimate bw probing has gone too far if CE ratio exceeds this threshold.
+ * Lowered to 25% for faster reaction to congestion in gaming workloads.
  * Scaled by BBR_SCALE. Disabled when 0.
  */
-static const u32 bbr_ecn_thresh = BBR_UNIT * 1 / 2;  /* 1/2 = 50% */
+static const u32 bbr_ecn_thresh = BBR_UNIT * 1 / 4;  /* 1/4 = 25% */
 
 /* If non-zero, if in a cycle with no losses but some ECN marks, after ECN
  * clears then make the first round's increment to inflight_hi the following
@@ -306,25 +308,30 @@ static const u32 bbr_ecn_thresh = BBR_UNIT * 1 / 2;  /* 1/2 = 50% */
  */
 static const u32 bbr_ecn_reprobe_gain = BBR_UNIT * 1 / 2;
 
-/* Estimate bw probing has gone too far if loss rate exceeds this level. */
-static const u32 bbr_loss_thresh = BBR_UNIT * 2 / 100;  /* 2% loss */
+/* Estimate bw probing has gone too far if loss rate exceeds this level.
+ * Lowered to 1% for faster congestion response in latency-sensitive gaming.
+ */
+static const u32 bbr_loss_thresh = BBR_UNIT * 1 / 100;  /* 1% loss */
 
 /* Slow down for a packet loss recovered by TLP? */
 static const bool bbr_loss_probe_recovery = true;
 
 /* Exit STARTUP if number of loss marking events in a Recovery round is >= N,
  * and loss rate is higher than bbr_loss_thresh.
+ * Lowered to 4 for faster STARTUP exit under loss in gaming scenarios.
  * Disabled if 0.
  */
-static const u32 bbr_full_loss_cnt = 6;
+static const u32 bbr_full_loss_cnt = 4;
 
 /* Exit STARTUP if number of round trips with ECN mark rate above ecn_thresh
  * meets this count.
  */
 static const u32 bbr_full_ecn_cnt = 2;
 
-/* Fraction of unutilized headroom to try to leave in path upon high loss. */
-static const u32 bbr_inflight_headroom = BBR_UNIT * 15 / 100;
+/* Fraction of unutilized headroom to try to leave in path upon high loss.
+ * Reduced to 12% to improve throughput while maintaining low queue depth.
+ */
+static const u32 bbr_inflight_headroom = BBR_UNIT * 12 / 100;
 
 /* How much do we increase cwnd_gain when probing for bandwidth in
  * BBR_BW_PROBE_UP? This specifies the increment in units of
@@ -347,10 +354,11 @@ static const u32 bbr_bw_probe_max_rounds = 63;
 static const u32 bbr_bw_probe_rand_rounds = 2;
 
 /* Use BBR-native probe time scale starting at this many usec.
+ * Reduced to 1.5 seconds for faster adaptation to network changes in gaming.
  * We aim to be fair with Reno/CUBIC up to an inter-loss time epoch of at least:
  *  BDP*RTT = 25Mbps * .030sec /(1514bytes) * 0.030sec = 1.9 secs
  */
-static const u32 bbr_bw_probe_base_us = 2 * USEC_PER_SEC;  /* 2 secs */
+static const u32 bbr_bw_probe_base_us = 3 * USEC_PER_SEC / 2;  /* 1.5 secs */
 
 /* Use BBR-native probes spread over this many usec: */
 static const u32 bbr_bw_probe_rand_us = 1 * USEC_PER_SEC;  /* 1 secs */
@@ -1121,13 +1129,6 @@ static int bbr_update_ecn_alpha(struct sock *sk)
 	return (int)ce_ratio;
 }
 
-/* PLB stripped on 5.10: this stub is intentionally empty so v3's call sites
- * remain in place but do nothing. PLB is a 6.x mainline feature.
- */
-static void bbr_plb(struct sock *sk, const struct rate_sample *rs, int ce_ratio)
-{
-}
-
 /* Each round trip of BBR_BW_PROBE_UP, double volume of probing data. */
 static void bbr_raise_inflight_hi_slope(struct sock *sk)
 {
@@ -1670,9 +1671,11 @@ static bool bbr_check_time_to_probe_bw(struct sock *sk,
 		/* Calculate n so that when bbr_raise_inflight_hi_slope()
 		 * computes growth_this_round as 2^n it will be roughly the
 		 * desired volume of data (inflight_hi*ecn_reprobe_gain).
+		 * Guard against overflow before ilog2.
 		 */
-		n = ilog2((((u64)bbr->inflight_hi *
-			    bbr_param(sk, ecn_reprobe_gain)) >> BBR_SCALE));
+		u64 prod = (u64)bbr->inflight_hi * bbr_param(sk, ecn_reprobe_gain);
+		prod = min(prod, (u64)0x7FFFFFFFULL << BBR_SCALE);
+		n = ilog2((prod >> BBR_SCALE));
 		bbr_start_bw_probe_refill(sk, n);
 		return true;
 	}
@@ -1960,7 +1963,8 @@ static bool bbr_run_fast_path(struct sock *sk, bool *update_model,
 
 	if (bbr_param(sk, fast_path) && bbr->try_fast_path &&
 	    rs->is_app_limited && ctx->sample_bw < bbr_max_bw(sk) &&
-	    !bbr->loss_in_round && !bbr->ecn_in_round ) {
+	    !bbr->loss_in_round && !bbr->ecn_in_round &&
+	    !bbr->idle_restart) {  /* Don't skip model updates after idle for gaming */
 		prev_mode = bbr->mode;
 		prev_min_rtt_us = bbr->min_rtt_us;
 		bbr_check_drain(sk, rs, ctx);
@@ -2004,7 +2008,7 @@ static void bbr_main(struct sock *sk, u32 ack, int flag,
 			min_t(s32, bbr->rounds_since_probe + 1, 0xFF);
 		ce_ratio = bbr_update_ecn_alpha(sk);
 	}
-	bbr_plb(sk, rs, ce_ratio);
+	/* bbr_plb() removed: PLB is 6.x feature, empty stub wasted CPU cycles */
 
 	bbr->ecn_in_round  |= (bbr->ecn_eligible && (tp->ecn_flags & TCP_ECN_DEMAND_CWR));
 	bbr_calculate_bw_sample(sk, rs, &ctx);
