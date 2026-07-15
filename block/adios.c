@@ -79,10 +79,10 @@
  */
 
 // Global variable to control the latency
-static u64 default_global_latency_window            = 16000000ULL;
-static u64 default_global_latency_window_rotational = 22000000ULL;
+static u64 default_global_latency_window            = 18000000ULL;
+static u64 default_global_latency_window_rotational = 24000000ULL;
 // Ratio below which batch queues should be refilled
-static u8  default_bq_refill_below_ratio = 20;
+static u8  default_bq_refill_below_ratio = 30;
 // Maximum latency sample to input
 static u64 default_lat_model_latency_limit = 500 * NSEC_PER_MSEC;
 // Batch ordering strategy
@@ -111,18 +111,18 @@ enum adios_optype {
 	ADIOS_OPTYPES = 4,
 };
 
-// Latency targets for each operation type
+// Latency targets tuned for automatic workload adaptation
 static u64 default_latency_target[ADIOS_OPTYPES] = {
-	[ADIOS_READ]    =     2ULL * NSEC_PER_MSEC,
-	[ADIOS_WRITE]   =  2000ULL * NSEC_PER_MSEC,
-	[ADIOS_DISCARD] =  8000ULL * NSEC_PER_MSEC,
+	[ADIOS_READ]    =  1500ULL * NSEC_PER_USEC,
+	[ADIOS_WRITE]   =  1200ULL * NSEC_PER_MSEC,
+	[ADIOS_DISCARD] =  6000ULL * NSEC_PER_MSEC,
 	[ADIOS_OTHER]   =     0ULL * NSEC_PER_MSEC,
 };
 
-// Maximum batch size limits for each operation type
+// Batch limits balanced for throughput and latency
 static u32 default_batch_limit[ADIOS_OPTYPES] = {
-	[ADIOS_READ]    = 36,
-	[ADIOS_WRITE]   = 72,
+	[ADIOS_READ]    = 40,
+	[ADIOS_WRITE]   = 84,
 	[ADIOS_DISCARD] =  1,
 	[ADIOS_OTHER]   =  1,
 };
