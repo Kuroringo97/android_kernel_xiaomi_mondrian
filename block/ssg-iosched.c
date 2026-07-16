@@ -44,9 +44,20 @@ extern void blk_sec_stats_account_io_done(
 static const int read_expire = HZ / 10;		/* max time before a read is submitted. */
 static const int write_expire = HZ / 2;		/* ditto for writes, these limits are SOFT! */
 static const int max_write_starvation = 2;	/* max times reads can starve a write */
-static const int congestion_threshold = 85;	/* percentage of congestion threshold */
-static const int max_tgroup_io_ratio = 50;	/* maximum service ratio for each thread group */
 static const int max_async_write_ratio = 25;	/* maximum service ratio for async write */
+
+/*
+ * NOTE: the old raw-tgid congestion throttle (congestion_threshold /
+ * max_tgroup_io_ratio, ssg_tgroup_shallow_depth()) has been removed.
+ * It duplicated what ssg-cgroup.c's blkcg-based shallow_depth already
+ * does, except it was O(n) over rq_info_size on every request past the
+ * congestion line, AND it was completely blind to process priority
+ * (foreground top-app vs background), unlike the cgroup path which can
+ * be tuned per-group via ssg.max_available_ratio. Keeping both meant
+ * the raw-tgid throttle could silently override the priority-aware one
+ * under load. blkcg's shallow_depth is always-on and now the sole
+ * per-process/per-group throttle mechanism.
+ */
 
 struct ssg_request_info {
 	pid_t tgid;
@@ -85,10 +96,7 @@ struct ssg_data {
 	 */
 	atomic_t allocated_rqs;
 	atomic_t async_write_rqs;
-	int congestion_threshold_rqs;
-	int max_tgroup_rqs;
 	int max_async_write_rqs;
-	unsigned int tgroup_shallow_depth;	/* thread group shallow depth for each tag map */
 	unsigned int async_write_shallow_depth;	/* async write shallow depth for each tag map */
 
 	/*
@@ -466,10 +474,6 @@ static void ssg_set_shallow_depth(struct ssg_data *ssg, struct blk_mq_tags *tags
 		min_t(int, ssg->max_async_write_rqs, MAX_ASYNC_WRITE_RQS);
 	ssg->async_write_shallow_depth =
 		max_t(unsigned int, ssg->max_async_write_rqs / map_nr, 1);
-
-	ssg->max_tgroup_rqs = depth * max_tgroup_io_ratio / 100U;
-	ssg->tgroup_shallow_depth =
-		max_t(unsigned int, ssg->max_tgroup_rqs / map_nr, 1);
 }
 
 static void ssg_depth_updated(struct blk_mq_hw_ctx *hctx)
@@ -478,8 +482,6 @@ static void ssg_depth_updated(struct blk_mq_hw_ctx *hctx)
 	struct ssg_data *ssg = q->elevator->elevator_data;
 	struct blk_mq_tags *tags = hctx->sched_tags;
 	unsigned int depth = tags->bitmap_tags->sb.depth;
-
-	ssg->congestion_threshold_rqs = depth * congestion_threshold / 100U;
 
 	kfree(ssg->rq_info);
 	ssg->rq_info_size = depth;
@@ -514,37 +516,12 @@ static unsigned int ssg_async_write_shallow_depth(unsigned int op,
 	return ssg->async_write_shallow_depth;
 }
 
-static unsigned int ssg_tgroup_shallow_depth(struct blk_mq_alloc_data *data)
-{
-	struct ssg_data *ssg = data->q->elevator->elevator_data;
-	pid_t tgid = task_tgid_nr(current->group_leader);
-	int tgroup_rqs = 0;
-	int i;
-
-	if (unlikely(!ssg->rq_info))
-		return 0;
-
-	for (i = 0; i < ssg->rq_info_size; i++)
-		if (tgid == ssg->rq_info[i].tgid)
-			tgroup_rqs++;
-
-	if (tgroup_rqs < ssg->max_tgroup_rqs)
-		return 0;
-
-	return ssg->tgroup_shallow_depth;
-}
-
 static void ssg_limit_depth(unsigned int op, struct blk_mq_alloc_data *data)
 {
-	struct ssg_data *ssg = data->q->elevator->elevator_data;
 	unsigned int shallow_depth = ssg_blkcg_shallow_depth(data->q);
 
 	shallow_depth = min_not_zero(shallow_depth,
 			ssg_async_write_shallow_depth(op, data));
-
-	if (atomic_read(&ssg->allocated_rqs) > ssg->congestion_threshold_rqs)
-		shallow_depth = min_not_zero(shallow_depth,
-				ssg_tgroup_shallow_depth(data));
 
 	data->shallow_depth = shallow_depth;
 }
@@ -607,8 +584,6 @@ static int ssg_init_queue(struct request_queue *q, struct elevator_type *e)
 
 	atomic_set(&ssg->allocated_rqs, 0);
 	atomic_set(&ssg->async_write_rqs, 0);
-	ssg->congestion_threshold_rqs =
-		q->nr_requests * congestion_threshold / 100U;
 	ssg->rq_info_size = q->nr_requests;
 	ssg->rq_info = kcalloc(ssg->rq_info_size, sizeof(struct ssg_request_info),
 			       GFP_KERNEL);
@@ -841,7 +816,6 @@ SHOW_FUNCTION(ssg_read_expire_show, ssg->fifo_expire[READ], 1);
 SHOW_FUNCTION(ssg_write_expire_show, ssg->fifo_expire[WRITE], 1);
 SHOW_FUNCTION(ssg_max_write_starvation_show, ssg->max_write_starvation, 0);
 SHOW_FUNCTION(ssg_front_merges_show, ssg->front_merges, 0);
-SHOW_FUNCTION(ssg_tgroup_shallow_depth_show, ssg->tgroup_shallow_depth, 0);
 SHOW_FUNCTION(ssg_async_write_shallow_depth_show, ssg->async_write_shallow_depth, 0);
 #undef SHOW_FUNCTION
 
@@ -878,7 +852,6 @@ static struct elv_fs_entry ssg_attrs[] = {
 	SSG_ATTR(write_expire),
 	SSG_ATTR(max_write_starvation),
 	SSG_ATTR(front_merges),
-	SSG_ATTR_RO(tgroup_shallow_depth),
 	SSG_ATTR_RO(async_write_shallow_depth),
 	__ATTR_NULL
 };

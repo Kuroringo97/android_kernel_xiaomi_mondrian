@@ -66,6 +66,16 @@ static void ssg_blkcg_cpd_free(struct blkcg_policy_data *cpd)
 static void ssg_blkcg_set_shallow_depth(struct ssg_blkcg *ssg_blkcg,
 		struct ssg_blkg *ssg_blkg, struct blk_mq_tags *tags)
 {
+	/*
+	 * NOTE: callers pass tags derived from a single hardware queue
+	 * (commonly queue_hw_ctx[0]). This assumes tag depth is uniform
+	 * and shared across all hw queues, which holds for legacy
+	 * single-queue UFS hosts. If the storage controller runs in
+	 * multi-circular-queue (MCQ) mode with independent, non-shared
+	 * tag sets per hw queue, this under-accounts depth on the other
+	 * queues. Verify UFS host queue mode on target hardware before
+	 * relying on this for MCQ-capable controllers.
+	 */
 	unsigned int depth = tags->bitmap_tags->sb.depth;
 	unsigned int map_nr = tags->bitmap_tags->sb.map_nr;
 
