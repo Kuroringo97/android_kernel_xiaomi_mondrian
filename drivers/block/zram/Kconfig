@@ -16,7 +16,7 @@ config ZRAM
 
 config ZRAM_USE_ZBLOCK
 	bool "Use zblock as zram primary allocator"
-	depends on ZRAM=y && ZBLOCK=y
+	depends on ZRAM && ZBLOCK=y
 	help
 	  Use zblock as the primary allocator for compressed objects in zram.
 	  zsmalloc remains enabled for large incompressible objects.
