@@ -183,18 +183,17 @@ struct bbr_context {
 
 
 /* Window length of min_rtt filter (in sec): */
-static const u32 bbr_min_rtt_win_sec = 10;
+static const u32 bbr_min_rtt_win_sec = 7;
 /* Minimum time (in ms) spent at bbr_cwnd_min_target in BBR_PROBE_RTT mode.
- * Lowered 200 -> 150 to shorten the periodic queue-drain dip so the latency
- * floor is reached just as quickly while making the recurring throughput/latency
- * blip a bit shorter and more consistent for latency-sensitive traffic.
+ * Lowered 200 -> 150 -> 120 to shorten the periodic queue-drain dip for gaming.
+ * Shorter duration = less throughput impact, more consistent low latency.
  */
-static const u32 bbr_probe_rtt_mode_ms = 150;
+static const u32 bbr_probe_rtt_mode_ms = 120;
 /* Window length of probe_rtt_min_us filter (in ms), and consequently the
- * typical interval between PROBE_RTT mode entries. The default is 5000ms.
+ * typical interval between PROBE_RTT mode entries. Reduced to 4000ms for gaming.
  * Note that bbr_probe_rtt_win_ms must be <= bbr_min_rtt_win_sec * MSEC_PER_SEC
  */
-static const u32 bbr_probe_rtt_win_ms = 5000;
+static const u32 bbr_probe_rtt_win_ms = 4000;
 /* Proportion of cwnd to estimated BDP in PROBE_RTT, in units of BBR_UNIT: */
 static const u32 bbr_probe_rtt_cwnd_gain = BBR_UNIT * 1 / 2;
 
@@ -279,9 +278,9 @@ static const bool bbr_precise_ece_ack = true;
 static const u32 bbr_ecn_max_rtt_us = 100000;
 
 /* On losses, scale down inflight and pacing rate by beta scaled by BBR_SCALE.
- * No loss response when 0.
+ * No loss response when 0. Raised 30% -> 35% for faster congestion recovery.
  */
-static const u32 bbr_beta = BBR_UNIT * 30 / 100;
+static const u32 bbr_beta = BBR_UNIT * 35 / 100;
 
 /* Gain factor for ECN mark ratio samples, scaled by BBR_SCALE (1/16 = 6.25%) */
 static const u32 bbr_ecn_alpha_gain = BBR_UNIT * 1 / 16;
@@ -354,14 +353,12 @@ static const u32 bbr_bw_probe_max_rounds = 63;
 static const u32 bbr_bw_probe_rand_rounds = 2;
 
 /* Use BBR-native probe time scale starting at this many usec.
- * Reduced to 1.5 seconds for faster adaptation to network changes in gaming.
- * We aim to be fair with Reno/CUBIC up to an inter-loss time epoch of at least:
- *  BDP*RTT = 25Mbps * .030sec /(1514bytes) * 0.030sec = 1.9 secs
+ * Reduced to 1.5s for more responsive bandwidth discovery in gaming scenarios.
  */
-static const u32 bbr_bw_probe_base_us = 3 * USEC_PER_SEC / 2;  /* 1.5 secs */
+static const u32 bbr_bw_probe_base_us = 1500000;  /* 1.5 secs */
 
 /* Use BBR-native probes spread over this many usec: */
-static const u32 bbr_bw_probe_rand_us = 1 * USEC_PER_SEC;  /* 1 secs */
+static const u32 bbr_bw_probe_rand_us = 500000;  /* 0.5 secs */
 
 /* Use fast path if app-limited, no loss/ECN, and target cwnd was reached? */
 static const bool bbr_fast_path = true;
