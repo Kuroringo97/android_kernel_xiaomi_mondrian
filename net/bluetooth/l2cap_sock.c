@@ -1458,12 +1458,10 @@ static void l2cap_sock_cleanup_listen(struct sock *parent)
 		       state_to_string(chan->state));
 
 		l2cap_chan_lock(chan);
-		/* Since we cannot call l2cap_chan_close() without
-		 * conn->lock, schedule its timer to trigger the close
-		 * and cleanup of this channel.
-		 */
-		if (chan->conn)
-			__set_chan_timer(chan, 0);
+		__clear_chan_timer(chan);
+		l2cap_chan_close(chan, ECONNRESET);
+		if (!sock_flag(sk, SOCK_DEAD))
+			l2cap_sock_kill(sk);
 		l2cap_chan_unlock(chan);
 
 		l2cap_chan_put(chan);
