@@ -79,10 +79,10 @@
  */
 
 // Global variable to control the latency
-static u64 default_global_latency_window            = 18000000ULL;
-static u64 default_global_latency_window_rotational = 24000000ULL;
+static u64 default_global_latency_window            = 10000000ULL;
+static u64 default_global_latency_window_rotational = 18000000ULL;
 // Ratio below which batch queues should be refilled
-static u8  default_bq_refill_below_ratio = 30;
+static u8  default_bq_refill_below_ratio = 35;
 // Maximum latency sample to input
 static u64 default_lat_model_latency_limit = 500 * NSEC_PER_MSEC;
 // Batch ordering strategy
@@ -113,16 +113,16 @@ enum adios_optype {
 
 // Latency targets tuned for automatic workload adaptation
 static u64 default_latency_target[ADIOS_OPTYPES] = {
-	[ADIOS_READ]    =  1500ULL * NSEC_PER_USEC,
-	[ADIOS_WRITE]   =  1200ULL * NSEC_PER_MSEC,
-	[ADIOS_DISCARD] =  6000ULL * NSEC_PER_MSEC,
+	[ADIOS_READ]    =     2ULL * NSEC_PER_MSEC,
+	[ADIOS_WRITE]   =   100ULL * NSEC_PER_MSEC,
+	[ADIOS_DISCARD] =  8000ULL * NSEC_PER_MSEC,
 	[ADIOS_OTHER]   =     0ULL * NSEC_PER_MSEC,
 };
 
 // Batch limits balanced for throughput and latency
 static u32 default_batch_limit[ADIOS_OPTYPES] = {
-	[ADIOS_READ]    = 40,
-	[ADIOS_WRITE]   = 84,
+	[ADIOS_READ]    = 20,
+	[ADIOS_WRITE]   = 40,
 	[ADIOS_DISCARD] =  1,
 	[ADIOS_OTHER]   =  1,
 };
@@ -143,7 +143,7 @@ enum adios_batch_order {
 #define ADIOS_DL_TYPES  2
 #define ADIOS_BQ_PAGES  2
 
-static u32 default_dl_prio[ADIOS_DL_TYPES] = {8, 0};
+static u32 default_dl_prio[ADIOS_DL_TYPES] = {-4, 0};
 
 // Bit flags for the atomic state variable, indicating which queues have requests.
 enum adios_state_flags {
@@ -164,7 +164,7 @@ enum adios_state_flags {
 #define ADIOS_QUANTUM_SHIFT 20
 
 #define ADIOS_MAX_INSERTS_PER_LOCK 72
-#define ADIOS_MAX_DELETES_PER_LOCK 24
+#define ADIOS_MAX_DELETES_PER_LOCK 16
 
 // Structure to hold latency bucket data for small requests
 struct latency_bucket_small {
@@ -907,7 +907,7 @@ static void insert_to_prio_queue(struct adios_data *ad,
 	/* We're sure that rd->managed == true */
 	union adios_in_flight_rqs ifr = {
 		.count          = 1,
-		.total_pred_lat = rd->pred_lat,
+		.total_pred_lat = min_t(u64, rd->pred_lat, (1ULL << 48) - 1),
 	};
 	atomic64_add(ifr.scalar, &ad->in_flight_rqs.atomic);
 
@@ -1167,7 +1167,7 @@ static bool fill_batch_queues(struct adios_data *ad, u64 tpl) {
 		/* We're sure that every request's rd->managed == true */
 		union adios_in_flight_rqs ifr = {
 			.count          = count,
-			.total_pred_lat = added_lat,
+			.total_pred_lat = min_t(u64, added_lat, (1ULL << 48) - 1),
 		};
 		atomic64_add(ifr.scalar, &ad->in_flight_rqs.atomic);
 
@@ -1405,7 +1405,7 @@ static void adios_completed_request(struct request *rq, u64 now) {
 	if (rd->managed) {
 		union adios_in_flight_rqs ifr_to_sub = {
 			.count          = 1,
-			.total_pred_lat = rd->pred_lat,
+			.total_pred_lat = min_t(u64, rd->pred_lat, (1ULL << 48) - 1),
 		};
 		ifr.scalar = atomic64_sub_return(
 			ifr_to_sub.scalar, &ad->in_flight_rqs.atomic);
@@ -1417,6 +1417,7 @@ static void adios_completed_request(struct request *rq, u64 now) {
 
 	local_irq_save(flags);
 	pc = this_cpu_ptr(ad->pcpu_completion);
+	smp_rmb();
 
 	if (optype == ADIOS_OTHER) {
 		// Non-positional commands make the head position unpredictable.
@@ -1458,7 +1459,9 @@ static void adios_completed_request(struct request *rq, u64 now) {
 
 	latency_model_input(ad, &ad->latency_model[optype],
 		rd->block_size, latency, rd->pred_lat, weight);
-	timer_reduce(&ad->update_timer, jiffies + msecs_to_jiffies(100));
+
+	if (time_after(ad->update_timer.expires, jiffies + msecs_to_jiffies(50)))
+		timer_reduce(&ad->update_timer, jiffies + msecs_to_jiffies(100));
 }
 
 // Clean up after a request is finished
@@ -1842,7 +1845,7 @@ static ssize_t adios_##field##_store( \
 
 SYSFS_INT_DECL(bq_refill_below_ratio, 0, 100)
 SYSFS_INT_DECL(lat_model_latency_limit, 0, 2*NSEC_PER_SEC)
-SYSFS_INT_DECL(batch_order, ADIOS_BO_OPTYPE, !!ad->is_rotational)
+SYSFS_INT_DECL(batch_order, ADIOS_BO_OPTYPE, ADIOS_BO_ELEVATOR)
 
 // Show the read priority
 static ssize_t adios_read_priority_show(
@@ -2022,8 +2025,6 @@ static struct elv_fs_entry adios_sched_attrs[] = {
 // Define the ADIOS scheduler type
 static struct elevator_type mq_adios = {
 	.ops = {
-		.next_request		= elv_rb_latter_request,
-		.former_request		= elv_rb_former_request,
 		.limit_depth		= adios_limit_depth,
 		.depth_updated		= adios_depth_updated,
 		.request_merged		= adios_request_merged,
