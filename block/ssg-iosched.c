@@ -572,15 +572,18 @@ static int ssg_init_queue(struct request_queue *q, struct elevator_type *e)
 	}
 	eq->elevator_data = ssg;
 
-	ssg->queue = q;
-	INIT_LIST_HEAD(&ssg->fifo_list[READ]);
-	INIT_LIST_HEAD(&ssg->fifo_list[WRITE]);
-	ssg->sort_list[READ] = RB_ROOT;
-	ssg->sort_list[WRITE] = RB_ROOT;
-	ssg->fifo_expire[READ] = read_expire;
-	ssg->fifo_expire[WRITE] = write_expire;
-	ssg->max_write_starvation = max_write_starvation;
-	ssg->front_merges = 1;
+    ssg->queue = q;
+    INIT_LIST_HEAD(&ssg->fifo_list[READ]);
+    INIT_LIST_HEAD(&ssg->fifo_list[WRITE]);
+    ssg->sort_list[READ] = RB_ROOT;
+    ssg->sort_list[WRITE] = RB_ROOT;
+    ssg->fifo_expire[READ]  = msecs_to_jiffies(read_expire);
+    ssg->fifo_expire[WRITE] = write_expire;
+    ssg->max_write_starvation = max_write_starvation;
+    ssg->front_merges = 1;
+    blk_queue_max_hw_sectors(q, 128 * 8);
+    q->backing_dev_info->ra_pages = 128;
+    blk_queue_rq_timeout(q, 5000);
 
 	atomic_set(&ssg->allocated_rqs, 0);
 	atomic_set(&ssg->async_write_rqs, 0);
