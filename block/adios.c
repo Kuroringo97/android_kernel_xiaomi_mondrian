@@ -78,14 +78,11 @@
  * 3. Barrier-pending requests are handled only after the main queues are empty.
  */
 
-// Global variable to control the latency
-static u64 default_global_latency_window            = 10000000ULL;
-static u64 default_global_latency_window_rotational = 18000000ULL;
-// Ratio below which batch queues should be refilled
-static u8  default_bq_refill_below_ratio = 35;
-// Maximum latency sample to input
-static u64 default_lat_model_latency_limit = 500 * NSEC_PER_MSEC;
-// Batch ordering strategy
+// UFS-tuned latency windows (ns)
+static u64 default_global_latency_window = 8000000ULL;  // 8ms for UFS
+static u8  default_bq_refill_below_ratio = 40;
+static u8  default_bq_refill_above_ratio = 60;  // ponytail: hysteresis prevents oscillation
+static u64 default_lat_model_latency_limit = 200 * NSEC_PER_MSEC;  // 200ms cap
 static u64 default_batch_order = 0;
 
 /* Compliance Flags:
@@ -250,7 +247,8 @@ struct adios_data {
 	u32 async_depth;
 	u32 lat_model_latency_limit;
 	u8  bq_refill_below_ratio;
-	u8  is_rotational;
+	u8  bq_refill_above_ratio;
+	u64 last_io_time;
 	u8  batch_order;
 	u8  elv_direction;
 	sector_t head_pos;
@@ -473,7 +471,7 @@ static void reset_buckets(struct lm_buckets *buckets)
 
 static void lm_reset_pcpu_buckets(struct latency_model *model) {
 	int cpu;
-	for_each_possible_cpu(cpu) {
+	for_each_online_cpu(cpu) {
 		reset_buckets(per_cpu_ptr(model->pcpu_buckets, cpu));
 		reset_buckets(per_cpu_ptr(model->pcpu_snapshot, cpu));
 	}
@@ -504,9 +502,8 @@ static void latency_model_update(
 		return;
 	}
 
-	// Aggregate deltas from all CPUs using snapshot-delta method.
-	// Per-CPU counters increase monotonically; we compute delta = current - snapshot.
-	for_each_possible_cpu(cpu) {
+	// Aggregate deltas from per-CPU buckets using snapshot-delta method
+	for_each_online_cpu(cpu) {
 		pcpu_b = per_cpu_ptr(model->pcpu_buckets, cpu);
 		snap   = per_cpu_ptr(model->pcpu_snapshot, cpu);
 
@@ -1252,12 +1249,14 @@ static struct request *dispatch_from_bq(struct adios_data *ad) {
 	union adios_in_flight_rqs ifr;
 	ifr.scalar = atomic64_read(&ad->in_flight_rqs.atomic);
 	u64 tpl = ifr.total_pred_lat;
+	u64 refill_low, refill_high;
 
-	// Refill the batch queues if the back page is empty, dl_tree has work, and
-	// current page is empty or the total ongoing latency is below the threshold
+	refill_low = div_u64(ad->global_latency_window * ad->bq_refill_below_ratio, 100);
+	refill_high = div_u64(ad->global_latency_window * ad->bq_refill_above_ratio, 100);
+
+	// ponytail: hysteresis prevents refill oscillation
 	if (!bq_page_has_rq(bq_state, !ad->bq_page) &&
-			(!bq_curr_page_has_rq || (!tpl || tpl < div_u64(
-			ad->global_latency_window * ad->bq_refill_below_ratio, 100))) &&
+			(!bq_curr_page_has_rq || (!tpl || tpl < refill_low)) &&
 			eval_this_adios_state(state, ADIOS_STATE_DL))
 		fill_batch_queues(ad, tpl);
 
@@ -1388,9 +1387,15 @@ found:
 // Timer callback function to periodically update latency models
 static void update_timer_callback(struct timer_list *t) {
 	struct adios_data *ad = from_timer(ad, t, update_timer);
+	u64 idle_ms, next_interval_ms;
 
 	for (u8 optype = 0; optype < ADIOS_OPTYPES; optype++)
 		latency_model_update(ad, &ad->latency_model[optype]);
+
+	// ponytail: adaptive interval - longer when idle, shorter when active
+	idle_ms = jiffies_to_msecs(jiffies - ad->last_io_time);
+	next_interval_ms = (idle_ms > 2000) ? 2000 : 500;
+	mod_timer(&ad->update_timer, jiffies + msecs_to_jiffies(next_interval_ms));
 }
 
 // Handle the completion of a request
@@ -1399,7 +1404,9 @@ static void adios_completed_request(struct request *rq, u64 now) {
 	struct adios_rq_data *rd = get_rq_data(rq);
 	union adios_in_flight_rqs ifr = { .scalar = 0 };
 
-	if (op_is_flush(rq->cmd_flags) || !rd)
+	ad->last_io_time = jiffies;
+
+	if (!rd)
 		return;
 
 	if (rd->managed) {
@@ -1460,8 +1467,9 @@ static void adios_completed_request(struct request *rq, u64 now) {
 	latency_model_input(ad, &ad->latency_model[optype],
 		rd->block_size, latency, rd->pred_lat, weight);
 
-	if (time_after(ad->update_timer.expires, jiffies + msecs_to_jiffies(50)))
-		timer_reduce(&ad->update_timer, jiffies + msecs_to_jiffies(100));
+	// ponytail: gentle timer nudge - only if >1s away, prevents model instability
+	if (time_after(ad->update_timer.expires, jiffies + msecs_to_jiffies(1000)))
+		timer_reduce(&ad->update_timer, jiffies + msecs_to_jiffies(500));
 }
 
 // Clean up after a request is finished
@@ -1603,6 +1611,8 @@ static int adios_init_sched(struct request_queue *q, struct elevator_type *e) {
 		default_global_latency_window_rotational:
 		default_global_latency_window;
 	ad->bq_refill_below_ratio = default_bq_refill_below_ratio;
+	ad->bq_refill_above_ratio = default_bq_refill_above_ratio;
+	ad->last_io_time = jiffies;
 	ad->lat_model_latency_limit = default_lat_model_latency_limit;
 	ad->batch_order = default_batch_order;
 	ad->compliance_flags = default_compliance_flags;
