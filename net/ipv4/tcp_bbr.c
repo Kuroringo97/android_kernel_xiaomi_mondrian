@@ -182,18 +182,27 @@ struct bbr_context {
 #define bbr_priv(sk) ((struct bbr *)(tcp_sk(sk)->bbr_v3_state))
 
 
-/* Window length of min_rtt filter (in sec): */
-static const u32 bbr_min_rtt_win_sec = 7;
+/* Window length of min_rtt filter (in sec):
+ * Was 7 - with probe_rtt_win_ms raised to 9000ms below, 7s would violate
+ * the required probe_rtt_win_ms <= min_rtt_win_sec*1000 invariant.
+ * Restored to stock 10s.
+ */
+static const u32 bbr_min_rtt_win_sec = 10;
 /* Minimum time (in ms) spent at bbr_cwnd_min_target in BBR_PROBE_RTT mode.
- * Lowered 200 -> 150 -> 120 to shorten the periodic queue-drain dip for gaming.
- * Shorter duration = less throughput impact, more consistent low latency.
+ * Kept short (120ms vs stock 200ms) so each dip is brief, but PROBE_RTT now
+ * fires much less often (see probe_rtt_win_ms below) so the *net* number of
+ * dips per minute drops instead of rising. Short dip + rare dip = smooth.
  */
 static const u32 bbr_probe_rtt_mode_ms = 120;
 /* Window length of probe_rtt_min_us filter (in ms), and consequently the
- * typical interval between PROBE_RTT mode entries. Reduced to 4000ms for gaming.
+ * typical interval between PROBE_RTT mode entries.
+ * Was 4000ms, which forced an inflight-capping dip roughly every 4s -
+ * 2.5x more often than stock's 10s and the main source of felt stutter.
+ * Raised to 9000ms: still a bit tighter than stock 10000ms (slightly fresher
+ * min_rtt for gaming), but no longer aggressively frequent.
  * Note that bbr_probe_rtt_win_ms must be <= bbr_min_rtt_win_sec * MSEC_PER_SEC
  */
-static const u32 bbr_probe_rtt_win_ms = 4000;
+static const u32 bbr_probe_rtt_win_ms = 9000;
 /* Proportion of cwnd to estimated BDP in PROBE_RTT, in units of BBR_UNIT: */
 static const u32 bbr_probe_rtt_cwnd_gain = BBR_UNIT * 1 / 2;
 
@@ -272,15 +281,20 @@ static const u32 bbr_extra_acked_max_us = 100 * 1000;
 static const bool bbr_precise_ece_ack = true;
 
 /* Max RTT (in usec) at which to use sender-side ECN logic.
- * Raised to 100ms to enable ECN for gaming workloads (10-100ms typical RTT).
+ * Was 100ms - on cellular that's wide enough to catch normal higher-RTT
+ * paths and add an extra reactive-throttling trigger on top of loss/PROBE_RTT.
+ * Narrowed to 40ms: still covers local WiFi/LAN gaming RTTs, excludes most
+ * cellular WAN RTTs where CE marks are noisier and less meaningful.
  * Disabled when 0 (ECN allowed at any RTT).
  */
-static const u32 bbr_ecn_max_rtt_us = 100000;
+static const u32 bbr_ecn_max_rtt_us = 40000;
 
 /* On losses, scale down inflight and pacing rate by beta scaled by BBR_SCALE.
- * No loss response when 0. Raised 30% -> 35% for faster congestion recovery.
+ * No loss response when 0. Reverted 35% -> stock 30%: the extra 5% cut was
+ * making ordinary/non-congestive link loss feel like a bigger throughput dip
+ * than necessary, without meaningfully improving actual congestion recovery.
  */
-static const u32 bbr_beta = BBR_UNIT * 35 / 100;
+static const u32 bbr_beta = BBR_UNIT * 30 / 100;
 
 /* Gain factor for ECN mark ratio samples, scaled by BBR_SCALE (1/16 = 6.25%) */
 static const u32 bbr_ecn_alpha_gain = BBR_UNIT * 1 / 16;
@@ -308,19 +322,22 @@ static const u32 bbr_ecn_thresh = BBR_UNIT * 1 / 4;  /* 1/4 = 25% */
 static const u32 bbr_ecn_reprobe_gain = BBR_UNIT * 1 / 2;
 
 /* Estimate bw probing has gone too far if loss rate exceeds this level.
- * Lowered to 1% for faster congestion response in latency-sensitive gaming.
+ * Was 1% - on WiFi/cellular this is well within normal, non-congestive
+ * loss and was tripping the "back off" path constantly. Raised to stock 2%.
  */
-static const u32 bbr_loss_thresh = BBR_UNIT * 1 / 100;  /* 1% loss */
+static const u32 bbr_loss_thresh = BBR_UNIT * 2 / 100;  /* 2% loss */
 
 /* Slow down for a packet loss recovered by TLP? */
 static const bool bbr_loss_probe_recovery = true;
 
 /* Exit STARTUP if number of loss marking events in a Recovery round is >= N,
  * and loss rate is higher than bbr_loss_thresh.
- * Lowered to 4 for faster STARTUP exit under loss in gaming scenarios.
+ * Was 4 (stock 8) - combined with the lower loss_thresh above this made
+ * STARTUP bail out very easily on ordinary link noise. Set to 6 as a
+ * middle ground: still quicker than stock, not trigger-happy.
  * Disabled if 0.
  */
-static const u32 bbr_full_loss_cnt = 4;
+static const u32 bbr_full_loss_cnt = 6;
 
 /* Exit STARTUP if number of round trips with ECN mark rate above ecn_thresh
  * meets this count.
@@ -328,9 +345,11 @@ static const u32 bbr_full_loss_cnt = 4;
 static const u32 bbr_full_ecn_cnt = 2;
 
 /* Fraction of unutilized headroom to try to leave in path upon high loss.
- * Reduced to 12% to improve throughput while maintaining low queue depth.
+ * Was 12% (stock 16-20%) - too little headroom means bw-probing itself
+ * pushes the path into loss/queueing, which then triggers the beta/loss
+ * backoff above. Raised to 16% to break that self-inflicted cycle.
  */
-static const u32 bbr_inflight_headroom = BBR_UNIT * 12 / 100;
+static const u32 bbr_inflight_headroom = BBR_UNIT * 16 / 100;
 
 /* How much do we increase cwnd_gain when probing for bandwidth in
  * BBR_BW_PROBE_UP? This specifies the increment in units of
