@@ -80,6 +80,7 @@
 
 // UFS-tuned latency windows (ns)
 static u64 default_global_latency_window = 8000000ULL;  // 8ms for UFS
+static u64 default_global_latency_window_rotational = 16000000ULL;  // 16ms for HDD
 static u8  default_bq_refill_below_ratio = 40;
 static u8  default_bq_refill_above_ratio = 60;  // ponytail: hysteresis prevents oscillation
 static u64 default_lat_model_latency_limit = 200 * NSEC_PER_MSEC;  // 200ms cap
@@ -237,6 +238,7 @@ struct adios_data {
 	u8  bq_state[ADIOS_BQ_PAGES];
 
 	bool models_stable;
+	bool is_rotational;
 
 	u64 global_latency_window;
 	u64 compliance_flags;
