@@ -1,4 +1,4 @@
-CONFIG_LOCALVERSION="~Minazuki-R13"
+CONFIG_LOCALVERSION="~Minazuki-Sakura-R14"
 # CONFIG_LOCALVERSION_AUTO is not set
 CONFIG_UNAME_OVERRIDE=y
 CONFIG_UNAME_OVERRIDE_TARGET="com.google.android.gms,com.android.vending,com.google.android.gsf"
