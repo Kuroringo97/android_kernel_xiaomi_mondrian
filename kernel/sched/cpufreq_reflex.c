@@ -30,7 +30,7 @@
 #include <linux/sched/cpufreq.h>
 #include <linux/slab.h>
 #include <linux/tick.h>
-
+#include <linux/ktime.h>
 #include <trace/hooks/sched.h>
 
 #include <uapi/linux/sched/types.h>
@@ -42,14 +42,13 @@
 #define CPUFREQ_REFLEX_PROGNAME "Reflex CPUFreq Governor"
 #define CPUFREQ_REFLEX_AUTHOR   "Masahito Suzuki"
 
-#define CPUFREQ_REFLEX_VERSION  "0.3.0"
+#define CPUFREQ_REFLEX_VERSION  "0.3.3"
 
 /**************************************************************
  * Default tunables
  */
 #define CPUFREQ_REFLEX_DEFAULT_HISPEED_WINDOW_US   4000
 #define CPUFREQ_REFLEX_DEFAULT_HISPEED_FILTER_SHIFT   1
-
 
 #define IOWAIT_BOOST_MIN	(SCHED_CAPACITY_SCALE / 8)
 
@@ -281,32 +280,34 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 	unsigned long next_freq = 0;
 
 	if (arch_scale_freq_invariant())
-		freq = policy->cpuinfo.max_freq;
-	else
-		freq = policy->cur + (policy->cur >> 2);
+ 		freq = policy->cpuinfo.max_freq;
+ 	else
+ 		freq = policy->cur + (policy->cur >> 2);
 
-	trace_android_vh_map_util_freq(util, freq, max, &next_freq, policy,
-				       &rfx_pol->need_freq_update);
-	if (next_freq)
-		freq = next_freq;
-	else
-		freq = map_util_freq(util, freq, max);
+ 	trace_android_vh_map_util_freq(util, freq, max, &next_freq, policy,
+ 			       &rfx_pol->need_freq_update);
+ 	if (next_freq)
+ 		freq = next_freq;
+ 	else
+ 		freq = map_util_freq(util, freq, max);
 
-	if (freq == rfx_pol->cached_raw_freq && !rfx_pol->need_freq_update)
-		return rfx_pol->next_freq;
+ 	if (freq == rfx_pol->cached_raw_freq && !rfx_pol->need_freq_update)
+ 		return rfx_pol->next_freq;
 
-	rfx_pol->cached_raw_freq = freq;
-	l_freq = cpufreq_driver_resolve_freq(policy, freq);
-	idx = cpufreq_frequency_table_target(policy, freq, CPUFREQ_RELATION_H);
-	h_freq = policy->freq_table[idx].frequency;
-	h_freq = clamp(h_freq, policy->min, policy->max);
-	if (l_freq <= h_freq || l_freq == policy->min)
-		return l_freq;
+ 	rfx_pol->cached_raw_freq = freq;
 
-	if (mult_frac(100, freq - h_freq, l_freq - h_freq) < 20)
-		return h_freq;
+ 	l_freq = cpufreq_driver_resolve_freq(policy, freq);
+ 	idx = cpufreq_frequency_table_target(policy, freq, CPUFREQ_RELATION_H);
+ 	h_freq = policy->freq_table[idx].frequency;
+ 	h_freq = clamp(h_freq, policy->min, policy->max);
 
-	return l_freq;
+ 	if (l_freq <= h_freq || l_freq == policy->min)
+ 		return l_freq;
+
+ 	if (mult_frac(100, freq - h_freq, l_freq - h_freq) < 20)
+ 		return h_freq;
+
+ 	return l_freq;
 }
 
 /*
@@ -337,6 +338,17 @@ static void rfx_update_busy_pct(struct rfx_cpu *rfx_c,
 {
 	u64 cur_idle, cur_wall;
 	unsigned int wall_delta, idle_delta;
+
+	/*
+	 * Fast path: hispeed not armed. The hispeed window can only
+	 * have expired if the wall clock advanced window_us since the
+	 * last full read. A vDSO clock read is much cheaper than the
+	 * kcpustat seqcount/atomic64 read inside get_cpu_idle_time().
+	 */
+	if (!rfx_c->hispeed_active) {
+		if (ktime_to_us(ktime_get()) - rfx_c->prev_wall_time < window_us)
+			return;
+	}
 
 	cur_idle = get_cpu_idle_time(rfx_c->cpu, &cur_wall, 1);
 	wall_delta = (unsigned int)(cur_wall - rfx_c->prev_wall_time);
@@ -573,43 +585,43 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 
 	max_cap = arch_scale_cpu_capacity(rfx_c->cpu);
 
-	rfx_iowait_boost(rfx_c, time, flags);
-	rfx_c->last_update = time;
+ 	rfx_iowait_boost(rfx_c, time, flags);
+ 	rfx_c->last_update = time;
 
-	rfx_ignore_dl_rate_limit(rfx_c);
+ 	rfx_ignore_dl_rate_limit(rfx_c);
 
-	if (!rfx_should_update_freq(rfx_pol, time))
-		return;
+ 	if (!rfx_should_update_freq(rfx_pol, time))
+ 		return;
 
-	boost = rfx_iowait_apply(rfx_c, time, max_cap);
-	rfx_get_util(rfx_c, boost);
-	effective_util = max(rfx_c->util, boost);
+ 	boost = rfx_iowait_apply(rfx_c, time, max_cap);
+ 	rfx_get_util(rfx_c, boost);
+ 	effective_util = max(rfx_c->util, boost);
 
-	/* Blend PELT util with hispeed util (decayed by PELT half-life) */
-	rfx_update_busy_pct(rfx_c, tunables->hispeed_window_us,
-			    tunables->hispeed_filter_shift, time, max_cap);
-	effective_util = rfx_blend_util(rfx_c, effective_util, max_cap, time);
+ 	/* Blend PELT util with hispeed util (decayed by PELT half-life) */
+ 	rfx_update_busy_pct(rfx_c, tunables->hispeed_window_us,
+ 			    tunables->hispeed_filter_shift, time, max_cap);
+ 	effective_util = rfx_blend_util(rfx_c, effective_util, max_cap, time);
 
-	/* Proportional scaling (schedutil-identical) */
-	next_f = rfx_get_next_freq(rfx_pol, effective_util, max_cap);
+ 	/* Proportional scaling (schedutil-identical) */
+ 	next_f = rfx_get_next_freq(rfx_pol, effective_util, max_cap);
 
-	/* Hold frequency if CPU has not been idle (schedutil-identical) */
-	if (rfx_hold_freq(rfx_c) && next_f < rfx_pol->next_freq &&
-	    !rfx_pol->need_freq_update) {
-		next_f = rfx_pol->next_freq;
-		rfx_pol->cached_raw_freq = cached_freq;
-	}
+ 	/* Hold frequency if CPU has not been idle (schedutil-identical) */
+ 	if (rfx_hold_freq(rfx_c) && next_f < rfx_pol->next_freq &&
+ 	    !rfx_pol->need_freq_update) {
+ 		next_f = rfx_pol->next_freq;
+ 		rfx_pol->cached_raw_freq = cached_freq;
+ 	}
 
-	if (!rfx_update_next_freq(rfx_pol, time, next_f))
-		return;
+ 	if (!rfx_update_next_freq(rfx_pol, time, next_f))
+ 		return;
 
-	if (rfx_pol->policy->fast_switch_enabled) {
-		cpufreq_driver_fast_switch(rfx_pol->policy, next_f);
-	} else {
-		raw_spin_lock(&rfx_pol->update_lock);
-		rfx_deferred_update(rfx_pol);
-		raw_spin_unlock(&rfx_pol->update_lock);
-	}
+ 	if (rfx_pol->policy->fast_switch_enabled) {
+ 		cpufreq_driver_fast_switch(rfx_pol->policy, next_f);
+ 	} else {
+ 		raw_spin_lock(&rfx_pol->update_lock);
+ 		rfx_deferred_update(rfx_pol);
+ 		raw_spin_unlock(&rfx_pol->update_lock);
+ 	}
 }
 
 /************************ Shared policy support ***********************/
@@ -834,38 +846,38 @@ static int rfx_kthread_create(struct rfx_policy *rfx_pol)
 	int ret;
 
 	/* kthread only required for slow path */
-	if (policy->fast_switch_enabled)
-		return 0;
+ 	if (policy->fast_switch_enabled)
+ 		return 0;
 
-	kthread_init_work(&rfx_pol->work, rfx_work);
-	kthread_init_worker(&rfx_pol->worker);
-	thread = kthread_create(kthread_worker_fn, &rfx_pol->worker,
-				"rfxgov:%d",
-				cpumask_first(policy->related_cpus));
-	if (IS_ERR(thread)) {
-		pr_err("reflex: failed to create kthread: %ld\n", PTR_ERR(thread));
-		return PTR_ERR(thread);
-	}
+ 	kthread_init_work(&rfx_pol->work, rfx_work);
+ 	kthread_init_worker(&rfx_pol->worker);
+ 	thread = kthread_create(kthread_worker_fn, &rfx_pol->worker,
+ 				"rfxgov:%d",
+ 				cpumask_first(policy->related_cpus));
+ 	if (IS_ERR(thread)) {
+ 		pr_err("reflex: failed to create kthread: %ld\n", PTR_ERR(thread));
+ 		return PTR_ERR(thread);
+ 	}
 
-	ret = sched_setattr_nocheck(thread, &attr);
-	if (ret) {
-		kthread_stop(thread);
-		pr_warn("%s: failed to set SCHED_DEADLINE\n", __func__);
-		return ret;
-	}
+ 	ret = sched_setattr_nocheck(thread, &attr);
+ 	if (ret) {
+ 		kthread_stop(thread);
+ 		pr_warn("%s: failed to set SCHED_DEADLINE\n", __func__);
+ 		return ret;
+ 	}
 
-	rfx_pol->thread = thread;
-	if (policy->dvfs_possible_from_any_cpu)
-		set_cpus_allowed_ptr(thread, policy->related_cpus);
-	else
-		kthread_bind_mask(thread, policy->related_cpus);
+ 	rfx_pol->thread = thread;
+ 	if (policy->dvfs_possible_from_any_cpu)
+ 		set_cpus_allowed_ptr(thread, policy->related_cpus);
+ 	else
+ 		kthread_bind_mask(thread, policy->related_cpus);
 
-	init_irq_work(&rfx_pol->irq_work, rfx_irq_work);
-	mutex_init(&rfx_pol->work_lock);
+ 	init_irq_work(&rfx_pol->irq_work, rfx_irq_work);
+ 	mutex_init(&rfx_pol->work_lock);
 
-	wake_up_process(thread);
+ 	wake_up_process(thread);
 
-	return 0;
+ 	return 0;
 }
 
 static void rfx_kthread_stop(struct rfx_policy *rfx_pol)
@@ -907,55 +919,55 @@ static int rfx_init(struct cpufreq_policy *policy)
 	int ret = 0;
 
 	if (policy->governor_data)
-		return -EBUSY;
+ 		return -EBUSY;
 
-	cpufreq_enable_fast_switch(policy);
+ 	cpufreq_enable_fast_switch(policy);
 
-	rfx_pol = rfx_policy_alloc(policy);
-	if (!rfx_pol) {
-		ret = -ENOMEM;
-		goto disable_fast_switch;
-	}
+ 	rfx_pol = rfx_policy_alloc(policy);
+ 	if (!rfx_pol) {
+ 		ret = -ENOMEM;
+ 		goto disable_fast_switch;
+ 	}
 
-	ret = rfx_kthread_create(rfx_pol);
-	if (ret)
-		goto free_rfx_pol;
+ 	ret = rfx_kthread_create(rfx_pol);
+ 	if (ret)
+ 		goto free_rfx_pol;
 
-	mutex_lock(&rfx_global_tunables_lock);
+ 	mutex_lock(&rfx_global_tunables_lock);
 
-	if (rfx_global_tunables) {
-		if (WARN_ON(have_governor_per_policy())) {
-			ret = -EINVAL;
-			goto stop_kthread;
-		}
-		policy->governor_data = rfx_pol;
-		rfx_pol->tunables = rfx_global_tunables;
+ 	if (rfx_global_tunables) {
+ 		if (WARN_ON(have_governor_per_policy())) {
+ 			ret = -EINVAL;
+ 			goto stop_kthread;
+ 		}
+ 		policy->governor_data = rfx_pol;
+ 		rfx_pol->tunables = rfx_global_tunables;
 
-		gov_attr_set_get(&rfx_global_tunables->attr_set,
-				 &rfx_pol->tunables_hook);
-		goto out;
-	}
+ 		gov_attr_set_get(&rfx_global_tunables->attr_set,
+ 				 &rfx_pol->tunables_hook);
+ 		goto out;
+ 	}
 
-	tunables = rfx_tunables_alloc(rfx_pol);
-	if (!tunables) {
-		ret = -ENOMEM;
-		goto stop_kthread;
-	}
+ 	tunables = rfx_tunables_alloc(rfx_pol);
+ 	if (!tunables) {
+ 		ret = -ENOMEM;
+ 		goto stop_kthread;
+ 	}
 
-	/* Default tunable values */
-	tunables->rate_limit_us = cpufreq_policy_transition_delay_us(policy);
-	tunables->hispeed_window_us = CPUFREQ_REFLEX_DEFAULT_HISPEED_WINDOW_US;
-	tunables->hispeed_filter_shift = CPUFREQ_REFLEX_DEFAULT_HISPEED_FILTER_SHIFT;
+ 	/* Default tunable values */
+ 	tunables->rate_limit_us = cpufreq_policy_transition_delay_us(policy);
+ 	tunables->hispeed_window_us = CPUFREQ_REFLEX_DEFAULT_HISPEED_WINDOW_US;
+ 	tunables->hispeed_filter_shift = CPUFREQ_REFLEX_DEFAULT_HISPEED_FILTER_SHIFT;
 
-	policy->governor_data = rfx_pol;
-	rfx_pol->tunables = tunables;
+ 	policy->governor_data = rfx_pol;
+ 	rfx_pol->tunables = tunables;
 
-	ret = kobject_init_and_add(&tunables->attr_set.kobj,
-				   &rfx_tunables_ktype,
-				   get_governor_parent_kobj(policy), "%s",
-				   reflex_gov.name);
-	if (ret)
-		goto fail;
+ 	ret = kobject_init_and_add(&tunables->attr_set.kobj,
+ 				   &rfx_tunables_ktype,
+ 				   get_governor_parent_kobj(policy), "%s",
+ 				   reflex_gov.name);
+ 	if (ret)
+ 		goto fail;
 
 out:
 	mutex_unlock(&rfx_global_tunables_lock);
@@ -1006,36 +1018,34 @@ static int rfx_start(struct cpufreq_policy *policy)
 	unsigned int cpu;
 
 	rfx_pol->freq_update_delay_ns =
-		rfx_pol->tunables->rate_limit_us * NSEC_PER_USEC;
-	rfx_pol->last_freq_update_time	= 0;
-	rfx_pol->next_freq		= 0;
-	rfx_pol->work_in_progress	= false;
-	rfx_pol->limits_changed		= false;
-	rfx_pol->cached_raw_freq	= 0;
+ 		rfx_pol->tunables->rate_limit_us * NSEC_PER_USEC;
+ 	rfx_pol->last_freq_update_time	= 0;
+ 	rfx_pol->next_freq		= 0;
+ 	rfx_pol->work_in_progress	= false;
+ 	rfx_pol->limits_changed		= false;
+ 	rfx_pol->cached_raw_freq	= 0;
 
-	rfx_pol->need_freq_update =
-		cpufreq_driver_test_flags(CPUFREQ_NEED_UPDATE_LIMITS);
+ 	rfx_pol->need_freq_update =
+ 		cpufreq_driver_test_flags(CPUFREQ_NEED_UPDATE_LIMITS);
 
-	for_each_cpu(cpu, policy->cpus) {
-		struct rfx_cpu *rfx_c = &per_cpu(rfx_cpu, cpu);
+ 	for_each_cpu(cpu, policy->cpus) {
+ 		struct rfx_cpu *rfx_c = &per_cpu(rfx_cpu, cpu);
 
-		memset(rfx_c, 0, sizeof(*rfx_c));
-		rfx_c->cpu = cpu;
-		rfx_c->rfx_policy = rfx_pol;
-		/* Initialize idle-time baseline for hispeed busy% */
-		rfx_c->prev_idle_time = get_cpu_idle_time(cpu,
-					&rfx_c->prev_wall_time, 1);
-	}
-
-	for_each_cpu(cpu, policy->cpus) {
-		struct rfx_cpu *rfx_c = &per_cpu(rfx_cpu, cpu);
-
-		cpufreq_add_update_util_hook(cpu, &rfx_c->update_util,
-					     policy_is_shared(policy) ?
-							rfx_update_shared :
-							rfx_update_single_freq);
-	}
-	return 0;
+ 		memset(rfx_c, 0, sizeof(*rfx_c));
+ 		rfx_c->cpu = cpu;
+ 		rfx_c->rfx_policy = rfx_pol;
+ 		/* Initialize idle-time baseline for hispeed busy% */
+ 		rfx_c->prev_idle_time = get_cpu_idle_time(cpu,
+ 					&rfx_c->prev_wall_time, 1);
+ 	}
+ 	for_each_cpu(cpu, policy->cpus) {
+ 		struct rfx_cpu *rfx_c = &per_cpu(rfx_cpu, cpu);
+ 		cpufreq_add_update_util_hook(cpu, &rfx_c->update_util,
+ 					     policy_is_shared(policy) ?
+ 							rfx_update_shared :
+ 							rfx_update_single_freq);
+ 	}
+ 	return 0;
 }
 
 static void rfx_stop(struct cpufreq_policy *policy)

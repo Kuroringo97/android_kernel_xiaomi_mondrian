@@ -212,7 +212,8 @@ config CPU_FREQ_GOV_SCHEDUTIL
 
 config CPU_FREQ_GOV_REFLEX
 	tristate "'reflex' cpufreq policy governor"
-	depends on CPU_FREQ && SMP
+	default m
+	depends on CPU_FREQ && SMP && CPU_FREQ_GOV_SCHEDUTIL
 	select CPU_FREQ_GOV_ATTR_SET
 	select IRQ_WORK
 	help
@@ -305,7 +306,7 @@ config LOONGSON2_CPUFREQ
 	tristate "Loongson2 CPUFreq Driver"
 	depends on LEMOTE_MACH2F
 	help
-	  This option adds a CPUFreq driver for loongson processors which
+	  This option adds a CPUfreq driver for loongson processors which
 	  support software configurable cpu frequency.
 
 	  Loongson2F and it's successors support this feature.
@@ -318,7 +319,7 @@ config LOONGSON1_CPUFREQ
 	tristate "Loongson1 CPUFreq Driver"
 	depends on LOONGSON1_LS1B
 	help
-	  This option adds a CPUFreq driver for loongson1 processors which
+	  This option adds a CPUfreq driver for loongson1 processors which
 	  support software configurable cpu frequency.
 
 	  For details, take a look at <file:Documentation/cpu-freq/>.
