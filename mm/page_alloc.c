@@ -84,8 +84,6 @@
 /* Free Page Internal flags: for internal, non-pcp variants of free_pages(). */
 typedef int __bitwise fpi_t;
 
-extern struct kcompress_t kcompress_data[MAX_NUMNODES];
-
 static inline struct per_cpu_pageset_ext *pcp_to_pageset_ext(struct per_cpu_pages *pcp)
 {
 	struct per_cpu_pageset *ps = container_of(pcp, struct per_cpu_pageset, pcp);
