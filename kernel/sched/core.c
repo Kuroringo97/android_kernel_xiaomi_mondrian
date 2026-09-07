@@ -3411,13 +3411,35 @@ static inline void inherit_burst(struct task_struct *p, struct task_struct *pare
 	p->se.prev_burst_penalty = max(p->se.prev_burst_penalty, burst_cache);
 }
 
-void sched_fork_bore(struct task_struct *p, struct task_struct *parent) {
+static u8 inherit_from_thread_group(struct task_struct *p) {
+	struct task_struct *leader = p->group_leader;
+	struct task_struct *sibling;
+	u32 cnt = 0, sum = 0;
+
+	for_each_thread(leader, sibling) {
+		if (!task_burst_inheritable(sibling)) continue;
+		cnt++;
+		sum += sibling->se.burst_penalty;
+	}
+
+	return cnt ? sum / cnt : 0;
+}
+
+void sched_fork_bore(struct task_struct *p, struct task_struct *parent,
+                     u64 clone_flags) {
 	p->se.burst_time = 0;
 	p->se.curr_burst_penalty = 0;
 	p->se.child_burst_last_cached = 0;
 
-	if (task_burst_inheritable(p))
-		inherit_burst(p, parent);
+	if (task_burst_inheritable(p)) {
+		if (clone_flags & CLONE_THREAD) {
+			u8 burst_cache = inherit_from_thread_group(p);
+			p->se.prev_burst_penalty =
+				max(p->se.prev_burst_penalty, burst_cache);
+		} else {
+			inherit_burst(p, parent);
+		}
+	}
 	p->se.burst_penalty = p->se.prev_burst_penalty;
 }
 #endif // CONFIG_SCHED_BORE

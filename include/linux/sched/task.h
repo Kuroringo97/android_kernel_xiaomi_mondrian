@@ -57,7 +57,8 @@ extern void init_idle(struct task_struct *idle, int cpu);
 
 extern int sched_fork(unsigned long clone_flags, struct task_struct *p);
 #ifdef CONFIG_SCHED_BORE
-extern void sched_fork_bore(struct task_struct *p, struct task_struct *parent);
+extern void sched_fork_bore(struct task_struct *p, struct task_struct *parent,
+			    u64 clone_flags);
 #endif // CONFIG_SCHED_BORE
 extern void sched_cgroup_fork(struct task_struct *p, struct kernel_clone_args *kargs);
 extern void sched_post_fork(struct task_struct *p);
