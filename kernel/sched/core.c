@@ -3416,11 +3416,13 @@ static u8 inherit_from_thread_group(struct task_struct *p) {
 	struct task_struct *sibling;
 	u32 cnt = 0, sum = 0;
 
+	rcu_read_lock();
 	for_each_thread(leader, sibling) {
 		if (!task_burst_inheritable(sibling)) continue;
 		cnt++;
 		sum += sibling->se.burst_penalty;
 	}
+	rcu_read_unlock();
 
 	return cnt ? sum / cnt : 0;
 }
@@ -3430,6 +3432,7 @@ void sched_fork_bore(struct task_struct *p, struct task_struct *parent,
 	p->se.burst_time = 0;
 	p->se.curr_burst_penalty = 0;
 	p->se.child_burst_last_cached = 0;
+	p->se.burst_score = 0;
 
 	if (task_burst_inheritable(p)) {
 		if (clone_flags & CLONE_THREAD) {
@@ -4303,6 +4306,14 @@ void sched_exec(void)
 	unsigned long flags;
 	int dest_cpu;
 	bool cond = false;
+
+#ifdef CONFIG_SCHED_BORE
+	p->se.burst_time = 0;
+	p->se.prev_burst_penalty = 0;
+	p->se.curr_burst_penalty = 0;
+	p->se.burst_penalty = 0;
+	p->se.burst_score = 0;
+#endif // CONFIG_SCHED_BORE
 
 	trace_android_rvh_sched_exec(&cond);
 	if (cond)
