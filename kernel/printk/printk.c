@@ -768,12 +768,12 @@ static ssize_t devkmsg_write(struct kiocb *iocb, struct iov_iter *from)
 		}
 	}
 
-	if (unlikely(strncmp(line, "healthd:", strlen("healthd:")) == 0))
+	if (strncmp(line, "healthd:", strlen("healthd:")) == 0)
 		goto skip_write;
 
 #ifdef CONFIG_SECURITY
 	if (disable_audit_log)
-		if (unlikely(strncmp(line, "SELinux: avc:", strlen("SELinux: avc:")) == 0))
+		if (strncmp(line, "SELinux: avc:", strlen("SELinux: avc:")) == 0)
 			goto skip_write;
 #endif
 
@@ -2016,8 +2016,8 @@ int vprintk_store(int facility, int level,
 	 */
 	text_len = vscnprintf(text, sizeof(textbuf), fmt, args);
 
-	if (unlikely(strstr(text, "[mi_disp") != NULL) ||
-	    unlikely(strstr(text, "[drm") != NULL))
+	if (strstr(text, "[mi_disp") != NULL ||
+	    strstr(text, "[drm") != NULL)
 		return 0;
 
 	/* mark and strip a trailing newline */
