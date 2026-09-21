@@ -22,12 +22,11 @@
  */
 static u64 cpu_min_sample_cntpct __read_mostly = 3 * NSEC_PER_USEC;
 
-/* Max frequencies for SM8550 (kHz) */
+/* Max frequencies for Poco F5 Pro 8+ Gen 1 underclocked (kHz) */
 static const u64 max_freqs[] = {
-	2016000, 2016000, 2016000,	/* Cores 0-2 (Silver/LITTLE) */
-	2803200, 2803200,		/* Cores 3-4 (Gold/Big) */
-	2803200, 2803200,		/* Cores 5-6 (Gold+/Big) */
-	3187200				/* Core 7 (Prime) */
+	1804800, 1804800, 1804800, 1804800,	/* cpu0-3 (little) */
+	2496000, 2496000, 2496000,		/* cpu4-6 (big) */
+	2995200					/* cpu7 (prime) */
 };
 
 /*
