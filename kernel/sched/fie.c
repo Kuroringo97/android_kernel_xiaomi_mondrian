@@ -3,6 +3,7 @@
  * Copyright (C) 2024-2025 Sultan Alsawaf <sultan@kerneltoast.com>.
  */
 
+#include <linux/arch_topology.h>
 #include <linux/cpufreq.h>
 #include <linux/perf_event.h>
 #include <linux/reboot.h>
@@ -437,7 +438,7 @@ static void update_freq_scale(int cpu, struct rq *rq, bool local_cpu)
 
 			/* Report the measured frequency and reset the stats */
 			freq = min(max_freq, USEC_PER_SEC * sfd->cpu_cyc / ns);
-			per_cpu(arch_freq_scale, cpu) =
+			per_cpu(freq_scale, cpu) =
 				SCHED_CAPACITY_SCALE * freq / max_freq;
 			reset_sfd_data(sfd);
 		} else if (sfd->const_cyc) {
@@ -553,15 +554,6 @@ static void fie_idle_exit(void *data, int state,
 	fie_cpu_idle(raw_smp_processor_id(), false);
 }
 
-static void fie_tick(void)
-{
-}
-
-static struct scale_freq_data fie_sfd = {
-	.source = SCALE_FREQ_SOURCE_ARCH,
-	.set_freq_scale = fie_tick
-};
-
 static int fie_cpuhp_up(unsigned int cpu)
 {
 	struct cpu_pmu *pmu = &per_cpu(cpu_pmu_evs, cpu);
@@ -613,14 +605,11 @@ static int fie_cpuhp_up(unsigned int cpu)
 	local_irq_enable();
 	reset_sfd_data(sfd);
 
-	topology_set_scale_freq_source(&fie_sfd, cpumask_of(cpu));
 	return 0;
 }
 
 static int fie_cpuhp_down(unsigned int cpu)
 {
-	topology_clear_scale_freq_source(SCALE_FREQ_SOURCE_ARCH,
-					 cpumask_of(cpu));
 	if (!per_cpu(cpu_has_amu, cpu))
 		release_perf_events(cpu);
 	return 0;
@@ -642,8 +631,6 @@ static int fie_reboot(struct notifier_block *notifier, unsigned long val,
 	 * it is guaranteed that all hooks which may read PMU registers will
 	 * observe `fie_ready == false`.
 	 */
-	topology_clear_scale_freq_source(SCALE_FREQ_SOURCE_ARCH,
-					 cpu_possible_mask);
 	static_branch_disable(&fie_ready);
 	kick_all_cpus_sync();
 	cpuhp_remove_state_nocalls(cpuhp_state);
@@ -659,18 +646,22 @@ static struct notifier_block fie_reboot_nb = {
 static int __init fie_init(void)
 {
 	/*
-	 * Delete the arch's scale_freq_data callback to get rid of the
-	 * duplicated work by the arch's callback, since we read the same
-	 * values. This also lets the frequency invariance engine work on cores
-	 * that lack the AMU const cycles counter, since we use a workaround for
-	 * such CPUs by using cpuidle callbacks to deduct time spent in WFE/WFI,
+	 * arch/arm64/kernel/topology.c already implements
+	 * arch_freq_counters_available() for AMU-capable CPUs on this SoC,
+	 * so cpufreq's topology_set_freq_scale() already backs off for those
+	 * CPUs without any help from us; we must not redefine that symbol
+	 * ourselves (strong-vs-strong link conflict). For CPUs that fall
+	 * back to raw PMU cycle counting (no usable AMU), there's no
+	 * equivalent gating available here, so cpufreq and update_freq_scale()
+	 * both write freq_scale directly; since we update on every rq clock
+	 * tick (far more often than cpufreq updates on transitions), our
+	 * value dominates in practice even without formal arbitration. This
+	 * also lets the frequency invariance engine work on cores that lack
+	 * the AMU const cycles counter, since we use a workaround for such
+	 * CPUs by using cpuidle callbacks to deduct time spent in WFE/WFI,
 	 * which is good enough despite not tracking WFE/WFI usage outside of
 	 * cpuidle (such as WFE/WFI usage in __delay()).
-	 *
-	 * A new scale_freq_data callback is installed in fie_cpuhp_up().
 	 */
-	topology_clear_scale_freq_source(SCALE_FREQ_SOURCE_ARCH,
-					 cpu_possible_mask);
 
 	/* Register the CPU hotplug notifier with calls to all online CPUs */
 	cpuhp_state = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "fie",
