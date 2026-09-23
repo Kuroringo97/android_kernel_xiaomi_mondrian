@@ -870,15 +870,19 @@ __init *thermal_of_build_thermal_zone(struct device_node *np)
 		return ERR_PTR(-ENOMEM);
 
 	ret = of_property_read_u32(np, "polling-delay-passive", &prop);
-	if (ret < 0) {
-		pr_err("%pOFn: missing polling-delay-passive property\n", np);
+	if (ret == -EINVAL) {
+		prop = 0;
+	} else if (ret < 0) {
+		pr_err("%pOFn: Couldn't get polling-delay-passive: %d\n", np, ret);
 		goto free_tz;
 	}
 	tz->passive_delay = prop;
 
 	ret = of_property_read_u32(np, "polling-delay", &prop);
-	if (ret < 0) {
-		pr_err("%pOFn: missing polling-delay property\n", np);
+	if (ret == -EINVAL) {
+		prop = 0;
+	} else if (ret < 0) {
+		pr_err("%pOFn: Couldn't get polling-delay: %d\n", np, ret);
 		goto free_tz;
 	}
 	tz->polling_delay = prop;
