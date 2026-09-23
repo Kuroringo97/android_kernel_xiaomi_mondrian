@@ -546,8 +546,21 @@ unsigned int cpufreq_driver_resolve_freq(struct cpufreq_policy *policy,
 					 unsigned int target_freq)
 {
 	unsigned int old_target_freq = target_freq;
+	unsigned int min = READ_ONCE(policy->min);
+	unsigned int max = READ_ONCE(policy->max);
 
-	target_freq = clamp_val(target_freq, policy->min, policy->max);
+	/*
+	 * If this function runs in parallel with cpufreq_set_policy(), it may
+	 * read policy->min before the update and policy->max after the update
+	 * or the other way around, so there is no ordering guarantee.
+	 *
+	 * Resolve this by always honoring the max (in case it comes from
+	 * thermal throttling or similar).
+	 */
+	if (unlikely(min > max))
+		min = max;
+
+	target_freq = clamp_val(target_freq, min, max);
 	trace_android_vh_cpufreq_resolve_freq(policy, target_freq, old_target_freq);
 	policy->cached_target_freq = target_freq;
 
@@ -1228,6 +1241,8 @@ static struct cpufreq_policy *cpufreq_policy_alloc(unsigned int cpu)
 	if (!zalloc_cpumask_var(&policy->real_cpus, GFP_KERNEL))
 		goto err_free_rcpumask;
 
+	init_rwsem(&policy->rwsem);
+
 	init_completion(&policy->kobj_unregister);
 	ret = kobject_init_and_add(&policy->kobj, &ktype_cpufreq,
 				   cpufreq_global_kobject, "policy%u", cpu);
@@ -1241,8 +1256,6 @@ static struct cpufreq_policy *cpufreq_policy_alloc(unsigned int cpu)
 		kobject_put(&policy->kobj);
 		goto err_free_real_cpus;
 	}
-
-	init_rwsem(&policy->rwsem);
 
 	freq_constraints_init(&policy->constraints);
 
@@ -2117,9 +2130,14 @@ unsigned int cpufreq_driver_fast_switch(struct cpufreq_policy *policy,
 {
 	unsigned int freq;
 	unsigned int old_target_freq = target_freq;
+	unsigned int min = READ_ONCE(policy->min);
+	unsigned int max = READ_ONCE(policy->max);
 	int cpu;
 
-	target_freq = clamp_val(target_freq, policy->min, policy->max);
+	if (unlikely(min > max))
+		min = max;
+
+	target_freq = clamp_val(target_freq, min, max);
 	trace_android_vh_cpufreq_fast_switch(policy, target_freq, old_target_freq);
 	freq = cpufreq_driver->fast_switch(policy, target_freq);
 
@@ -2230,13 +2248,18 @@ int __cpufreq_driver_target(struct cpufreq_policy *policy,
 			    unsigned int relation)
 {
 	unsigned int old_target_freq = target_freq;
+	unsigned int min = READ_ONCE(policy->min);
+	unsigned int max = READ_ONCE(policy->max);
 	int index;
 
 	if (cpufreq_disabled())
 		return -ENODEV;
 
+	if (unlikely(min > max))
+		min = max;
+
 	/* Make sure that target_freq is within supported range */
-	target_freq = clamp_val(target_freq, policy->min, policy->max);
+	target_freq = clamp_val(target_freq, min, max);
 	trace_android_vh_cpufreq_target(policy, target_freq, old_target_freq);
 
 	pr_debug("target for CPU %u: %u kHz, relation %u, requested %u kHz\n",
@@ -2520,8 +2543,9 @@ static int cpufreq_set_policy(struct cpufreq_policy *policy,
 	if (ret)
 		return ret;
 
-	policy->min = new_data.min;
-	policy->max = new_data.max;
+	WRITE_ONCE(policy->max, new_data.max);
+	WRITE_ONCE(policy->min, new_data.min > new_data.max ?
+				   new_data.max : new_data.min);
 	trace_cpu_frequency_limits(policy);
 
 	policy->cached_target_freq = UINT_MAX;
