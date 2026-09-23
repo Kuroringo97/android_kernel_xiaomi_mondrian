@@ -453,6 +453,7 @@ static void sugov_iowait_apply(struct sugov_cpu *sg_cpu, u64 time)
 	 * into the same scale so we can compare.
 	 */
 	boost = (sg_cpu->iowait_boost * sg_cpu->max) >> SCHED_CAPACITY_SHIFT;
+	boost = uclamp_rq_util_with(cpu_rq(sg_cpu->cpu), boost, NULL);
 	if (sg_cpu->util < boost)
 		sg_cpu->util = boost;
 }
@@ -503,8 +504,11 @@ static void sugov_update_single(struct update_util_data *hook, u64 time,
 	/*
 	 * Do not reduce the frequency if the CPU has not been idle
 	 * recently, as the reduction is likely to be premature then.
+	 *
+	 * Except when the rq is capped by uclamp_max.
 	 */
-	if (sugov_cpu_is_busy(sg_cpu) && next_f < sg_policy->next_freq) {
+	if (!uclamp_rq_is_capped(cpu_rq(sg_cpu->cpu)) &&
+	    sugov_cpu_is_busy(sg_cpu) && next_f < sg_policy->next_freq) {
 		next_f = sg_policy->next_freq;
 
 		/* Restore cached freq as next_freq has changed */
