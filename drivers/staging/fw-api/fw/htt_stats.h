@@ -12188,9 +12188,9 @@ typedef htt_stats_phy_stats_tlv htt_phy_stats_tlv;
     (((_var) & HTT_STATS_PHY_RESET_TPCCAL5GOPC_M) >> \
      HTT_STATS_PHY_RESET_TPCCAL5GOPC_S)
 /* provide alias macro that uses preferred naming convention */
-#define HTT_STATS_PHY_RESET_STATS_TPCCAL5GOPC_GET(_var) \
-    HTT_STATS_PHY_RESET_TPCCAL5GOPC_GET(_var)
-#define HTT_STATS_PHY_RESET_TPCCAL5GOPC_SET(_var, _val) \
+#define HTT_STATS_PHY_RESET_STATS_TPCCAL2GOPC_GET(_var) \
+    HTT_STATS_PHY_RESET_TPCCAL2GOPC_GET(_var)
+#define HTT_STATS_PHY_RESET_TPCCAL2GOPC_SET(_var, _val) \
     do { \
         HTT_CHECK_SET_VAL(HTT_STATS_PHY_RESET_TPCCAL2GOPC, _val); \
         ((_var) |= ((_val) << HTT_STATS_PHY_RESET_TPCCAL2GOPC_S)); \
@@ -12208,6 +12208,20 @@ typedef htt_stats_phy_stats_tlv htt_phy_stats_tlv;
     do { \
         HTT_CHECK_SET_VAL(HTT_STATS_PHY_RESET_TPCCAL6GFPC, _val); \
         ((_var) |= ((_val) << HTT_STATS_PHY_RESET_TPCCAL6GFPC_S)); \
+    } while (0)
+
+#define HTT_STATS_PHY_RESET_TPCCAL6GOPC_M 0x00000200
+#define HTT_STATS_PHY_RESET_TPCCAL6GOPC_S 9
+#define HTT_STATS_PHY_RESET_TPCCAL6GOPC_GET(_var) \
+    (((_var) & HTT_STATS_PHY_RESET_TPCCAL6GOPC_M) >> \
+     HTT_STATS_PHY_RESET_TPCCAL6GOPC_S)
+/* provide alias macro that uses preferred naming convention */
+#define HTT_STATS_PHY_RESET_STATS_TPCCAL5GOPC_GET(_var) \
+    HTT_STATS_PHY_RESET_TPCCAL5GOPC_GET(_var)
+#define HTT_STATS_PHY_RESET_TPCCAL5GOPC_SET(_var, _val) \
+    do { \
+        HTT_CHECK_SET_VAL(HTT_STATS_PHY_RESET_TPCCAL2GOPC, _val); \
+        ((_var) |= ((_val) << HTT_STATS_PHY_RESET_TPCCAL2GOPC_S)); \
     } while (0)
 
 #define HTT_STATS_PHY_RESET_TPCCAL6GOPC_M 0x00000200
