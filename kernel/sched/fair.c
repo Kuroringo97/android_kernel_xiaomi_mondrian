@@ -25,6 +25,10 @@
  */
 #include "sched.h"
 
+#ifdef CONFIG_SCHED_BORE
+#include <linux/sched/bore.h>
+#endif
+
 #include <trace/hooks/sched.h>
 
 EXPORT_TRACEPOINT_SYMBOL_GPL(sched_stat_runtime);
@@ -115,17 +119,6 @@ static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1000000UL;
 #endif // CONFIG_SCHED_BORE
 
 const_debug unsigned int sysctl_sched_migration_cost	= 500000UL;
-
-#ifdef CONFIG_SCHED_BORE
-u8   __read_mostly sched_bore                   = 1;
-u8   __read_mostly sched_burst_exclude_kthreads = 1;
-u8   __read_mostly sched_burst_smoothness_long  = 1;
-u8   __read_mostly sched_burst_smoothness_short = 0;
-u8   __read_mostly sched_burst_fork_atavistic   = 2;
-u8   __read_mostly sched_burst_penalty_offset   = 22;
-uint __read_mostly sched_burst_penalty_scale    = 1280;
-uint __read_mostly sched_burst_cache_lifetime   = 60000000;
-#endif // CONFIG_SCHED_BORE
 
 int sched_thermal_decay_shift;
 static int __init setup_sched_thermal_decay_shift(char *str)
@@ -560,28 +553,7 @@ find_matching_se(struct sched_entity **se, struct sched_entity **pse)
 #endif	/* CONFIG_FAIR_GROUP_SCHED */
 
 #ifdef CONFIG_SCHED_BORE
-#define MAX_BURST_PENALTY (39U <<2)
-
-static inline u32 log2plus1_u64_u32f8(u64 v) {
-	u32 msb = fls64(v);
-	u8 fractional = (v << (64 - msb) >> 55);
-	return msb << 8 | fractional;
-}
-
-static inline u32 calc_burst_penalty(u64 burst_time) {
-	u32 greed, tolerance, penalty, scaled_penalty;
-	
-	greed = log2plus1_u64_u32f8(burst_time);
-	tolerance = sched_burst_penalty_offset << 8;
-	penalty = max(0, (s32)(greed - tolerance));
-	scaled_penalty = penalty * sched_burst_penalty_scale >> 16;
-
-	return min(MAX_BURST_PENALTY, scaled_penalty);
-}
-
-static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
-			    unsigned long weight);
-static void reweight_task_by_prio(struct task_struct *p, int prio)
+void reweight_task_by_prio(struct task_struct *p, int prio)
 {
 	struct sched_entity *se = &p->se;
 	struct cfs_rq *cfs_rq = cfs_rq_of(se);
@@ -592,14 +564,8 @@ static void reweight_task_by_prio(struct task_struct *p, int prio)
 	load->inv_weight = sched_prio_to_wmult[prio];
 }
 
-static inline u8 effective_prio(struct task_struct *p) {
-	u8 prio = p->static_prio - MAX_RT_PRIO;
-	if (likely(sched_bore))
-		prio += p->se.burst_score;
-	return min(39, (int)prio);
-}
-
-static void update_burst_score(struct sched_entity *se) {
+void update_burst_score(struct sched_entity *se)
+{
 	struct task_struct *p;
 	u8 prev_prio, new_prio;
 	u8 burst_score = 0;
@@ -608,63 +574,16 @@ static void update_burst_score(struct sched_entity *se) {
 		return;
 
 	p = task_of(se);
-	prev_prio = effective_prio(p);
+	prev_prio = effective_prio_bore(p);
 
 	if (!((p->flags & PF_KTHREAD) && likely(sched_burst_exclude_kthreads)))
 		burst_score = se->burst_penalty >> 2;
 
 	se->burst_score = burst_score;
 
-	new_prio = effective_prio(p);
+	new_prio = effective_prio_bore(p);
 	if (new_prio != prev_prio)
 		reweight_task_by_prio(p, new_prio);
-}
-
-static void update_burst_penalty(struct sched_entity *se) {
-	se->curr_burst_penalty = calc_burst_penalty(se->burst_time);
-	se->burst_penalty = max(se->prev_burst_penalty, se->curr_burst_penalty);
-	update_burst_score(se);
-}
-
-static inline u32 binary_smooth(u32 new, u32 old) {
-	int increment = new - old;
-		return (0 <= increment)?
-	old + ( increment >> (int)sched_burst_smoothness_long):
-	old - (-increment >> (int)sched_burst_smoothness_short);
-}
-
-static void restart_burst(struct sched_entity *se) {
-	se->burst_penalty = se->prev_burst_penalty =
-		binary_smooth(se->curr_burst_penalty, se->prev_burst_penalty);
-	se->curr_burst_penalty = 0;
-	se->burst_time = 0;
-	update_burst_score(se);
-}
-
-static void reset_task_weights_bore(void) {
-	struct task_struct *task;
-	struct rq *rq;
-	struct rq_flags rf;
-
-	write_lock_irq(&tasklist_lock);
-	for_each_process(task) {
-		rq = task_rq(task);
-		rq_lock_irqsave(rq, &rf);
-		reweight_task_by_prio(task, effective_prio(task));
-		rq_unlock_irqrestore(rq, &rf);
-	}
-	write_unlock_irq(&tasklist_lock);
-}
-
-int sched_bore_update_handler(struct ctl_table *table, int write,
-		void __user *buffer, size_t *lenp, loff_t *ppos) {
-	int ret = proc_dou8vec_minmax(table, write, buffer, lenp, ppos);
-	if (ret || !write)
-		return ret;
-
-	reset_task_weights_bore();
-
-	return 0;
 }
 #endif // CONFIG_SCHED_BORE
 
@@ -3262,8 +3181,8 @@ static inline void
 dequeue_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se) { }
 #endif
 
-static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
-			    unsigned long weight)
+void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
+		     unsigned long weight)
 {
 	if (se->on_rq) {
 		/* commit outstanding execution time */
