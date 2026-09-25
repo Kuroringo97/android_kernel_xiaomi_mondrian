@@ -555,35 +555,23 @@ find_matching_se(struct sched_entity **se, struct sched_entity **pse)
 #ifdef CONFIG_SCHED_BORE
 void reweight_task_by_prio(struct task_struct *p, int prio)
 {
-	struct sched_entity *se = &p->se;
-	struct cfs_rq *cfs_rq = cfs_rq_of(se);
-	struct load_weight *load = &se->load;
-	unsigned long weight = scale_load(sched_prio_to_weight[prio]);
+	struct sched_entity *se;
+	unsigned long weight;
 
-	reweight_entity(cfs_rq, se, weight);
-	load->inv_weight = sched_prio_to_wmult[prio];
-}
-
-void update_burst_score(struct sched_entity *se)
-{
-	struct task_struct *p;
-	u8 prev_prio, new_prio;
-	u8 burst_score = 0;
-
-	if (!entity_is_task(se))
+	if (task_has_idle_policy(p))
 		return;
 
-	p = task_of(se);
-	prev_prio = effective_prio_bore(p);
+	se = &p->se;
+	weight = scale_load(sched_prio_to_weight[prio]);
 
-	if (!((p->flags & PF_KTHREAD) && likely(sched_burst_exclude_kthreads)))
-		burst_score = se->burst_penalty >> 2;
-
-	se->burst_score = burst_score;
-
-	new_prio = effective_prio_bore(p);
-	if (new_prio != prev_prio)
-		reweight_task_by_prio(p, new_prio);
+	if (se->on_rq) {
+		se->stop_update = true;
+		reweight_entity(cfs_rq_of(se), se, weight);
+		se->stop_update = false;
+	} else {
+		se->load.weight = weight;
+	}
+	se->load.inv_weight = sched_prio_to_wmult[prio];
 }
 #endif // CONFIG_SCHED_BORE
 
@@ -955,15 +943,14 @@ static void update_curr(struct cfs_rq *cfs_rq)
 	schedstat_add(cfs_rq->exec_clock, delta_exec);
 
 	curr->vruntime += calc_delta_fair(delta_exec, curr);
-#ifdef CONFIG_SCHED_BORE
-	curr->burst_time += delta_exec;
-	update_burst_penalty(curr);
-#endif // CONFIG_SCHED_BORE
 	update_min_vruntime(cfs_rq);
 
 	if (entity_is_task(curr)) {
 		struct task_struct *curtask = task_of(curr);
 
+#ifdef CONFIG_SCHED_BORE
+		update_curr_bore(curtask, delta_exec);
+#endif // CONFIG_SCHED_BORE
 		trace_sched_stat_runtime(curtask, delta_exec, curr->vruntime);
 		cgroup_account_cputime(curtask, delta_exec);
 		account_group_exec_runtime(curtask, delta_exec);
@@ -5921,7 +5908,7 @@ static void dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 		cfs_rq = cfs_rq_of(se);
 		if (cfs_rq->curr == se)
 			update_curr(cfs_rq);
-		restart_burst(se);
+		restart_burst_bore(p);
 	}
 #endif // CONFIG_SCHED_BORE
 
@@ -7631,7 +7618,7 @@ static void yield_task_fair(struct rq *rq)
 	 */
 	update_curr(cfs_rq);
 #ifdef CONFIG_SCHED_BORE
-	restart_burst(se);
+	restart_burst_bore(curr);
 	if (unlikely(rq->nr_running == 1))
 		return;
 
@@ -11217,9 +11204,6 @@ static void task_fork_fair(struct task_struct *p)
 		update_curr(cfs_rq);
 		se->vruntime = curr->vruntime;
 	}
-#ifdef CONFIG_SCHED_BORE
-	update_burst_score(se);
-#endif // CONFIG_SCHED_BORE
 	place_entity(cfs_rq, se, 1);
 
 	if (sysctl_sched_child_runs_first && curr && entity_before(curr, se)) {

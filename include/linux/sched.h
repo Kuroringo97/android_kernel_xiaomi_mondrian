@@ -457,6 +457,20 @@ struct sched_statistics {
 #endif
 };
 
+#ifdef CONFIG_SCHED_BORE
+#define BORE_BC_TIMESTAMP_SHIFT 16
+
+struct bore_bc {
+	union {
+		struct {
+			u64		timestamp:	48;
+			u64		penalty:	16;
+		};
+		u64			value;
+	};
+};
+#endif /* CONFIG_SCHED_BORE */
+
 struct sched_entity {
 	/* For load-balancing: */
 	struct load_weight		load;
@@ -498,14 +512,14 @@ struct sched_entity {
 	ANDROID_KABI_USE(1, u64 burst_time);
 	_ANDROID_KABI_REPLACE(_ANDROID_KABI_RESERVE(2),
 		struct {
-			u8 prev_burst_penalty;
-			u8 curr_burst_penalty;
-			u8 burst_penalty;
-			u8 burst_score;
+			u16 prev_penalty;
+			u16 curr_penalty;
+			u16 penalty;
+			u8 stop_update;
 		}
 	);
-	ANDROID_KABI_USE2(3, u8 child_burst, u32 child_burst_cnt);
-	ANDROID_KABI_USE(4, u64 child_burst_last_cached);
+	ANDROID_KABI_USE(3, struct bore_bc subtree);
+	ANDROID_KABI_USE(4, struct bore_bc group);
 #else // CONFIG_SCHED_BORE
 	ANDROID_KABI_RESERVE(1);
 	ANDROID_KABI_RESERVE(2);

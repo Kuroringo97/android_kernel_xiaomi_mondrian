@@ -894,7 +894,11 @@ int tg_nop(struct task_group *tg, void *data)
 static void set_load_weight(struct task_struct *p)
 {
 	bool update_load = !(READ_ONCE(p->state) & TASK_NEW);
+#ifdef CONFIG_SCHED_BORE
+	int prio = effective_prio_bore(p);
+#else // CONFIG_SCHED_BORE
 	int prio = p->static_prio - MAX_RT_PRIO;
+#endif // CONFIG_SCHED_BORE
 	struct load_weight lw;
 
 	if (task_has_idle_policy(p)) {
@@ -4163,11 +4167,7 @@ void sched_exec(void)
 	bool cond = false;
 
 #ifdef CONFIG_SCHED_BORE
-	p->se.burst_time = 0;
-	p->se.prev_burst_penalty = 0;
-	p->se.curr_burst_penalty = 0;
-	p->se.burst_penalty = 0;
-	p->se.burst_score = 0;
+	reset_task_bore(p);
 #endif // CONFIG_SCHED_BORE
 
 	trace_android_rvh_sched_exec(&cond);
@@ -7495,7 +7495,6 @@ void __init sched_init(void)
 
 #ifdef CONFIG_SCHED_BORE
 	sched_init_bore();
-	printk(KERN_INFO "BORE (Burst-Oriented Response Enhancer) CPU Scheduler modification 5.3.0 by Masahito Suzuki");
 #endif // CONFIG_SCHED_BORE
 
 	wait_bit_init();
